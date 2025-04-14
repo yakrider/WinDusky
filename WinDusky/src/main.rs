@@ -10,5 +10,5 @@ mod color_matrices;
 
 
 fn main() {
-    win_dusky::run_it().expect("ERROR running WinDusky");
+    win_dusky::start_overlay().expect("ERROR running WinDusky");
 }

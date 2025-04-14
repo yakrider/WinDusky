@@ -16,9 +16,9 @@ pub const COLOR_EFF__SIMPLE_INVERSION: MAGCOLOREFFECT = MAGCOLOREFFECT { transfo
 
 // Smart Inversion
 pub const COLOR_EFF__SMART_INVERSION: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
-     0.3333333, -0.6666667, -0.6666667,  0.0,  0.0,
-    -0.6666667,  0.3333333, -0.6666667,  0.0,  0.0,
-    -0.6666667, -0.6666667,  0.3333333,  0.0,  0.0,
+     0.333333,  -0.666666,  -0.666666,   0.0,  0.0,
+    -0.666666,   0.333333,  -0.666666,   0.0,  0.0,
+    -0.666666,  -0.666666,   0.333333,   0.0,  0.0,
      0.0,        0.0,        0.0,        1.0,  0.0,
      1.0,        1.0,        1.0,        0.0,  1.0,
 ] };
@@ -43,9 +43,9 @@ pub const COLOR_EFF__SMART_INVERSION_ALT2: MAGCOLOREFFECT = MAGCOLOREFFECT { tra
 
 // Smart Inversion Alt 3
 pub const COLOR_EFF__SMART_INVERSION_ALT3: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
-     1.0895080, -0.9326327, -0.9326330,  0.0,  0.0,
-    -1.8177180,  0.1683074, -1.8416920,  0.0,  0.0,
-    -0.2445895, -0.2478156,  1.7621850,  0.0,  0.0,
+     1.089508,  -0.932632,  -0.932633,   0.0,  0.0,
+    -1.817718,   0.168307,  -1.841692,   0.0,  0.0,
+    -0.244589,  -0.247815,   1.762185,   0.0,  0.0,
      0.0,        0.0,        0.0,        1.0,  0.0,
      1.0,        1.0,        1.0,        0.0,  1.0,
 ] };

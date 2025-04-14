@@ -2,8 +2,19 @@
 
 // todo .. Note : some of these are from github.com/mlaily/NegativeScreen .. and that has GPL
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use once_cell::sync::Lazy;
 use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
+
+// Simple Inversion
+pub const COLOR_EFF__IDENTITY: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
+     1.0,  0.0,  0.0,  0.0,  0.0,
+     0.0,  1.0,  0.0,  0.0,  0.0,
+     0.0,  0.0,  1.0,  0.0,  0.0,
+     0.0,  0.0,  0.0,  1.0,  0.0,
+     0.0,  0.0,  0.0,  0.0,  1.0,
+] };
 
 // Simple Inversion
 pub const COLOR_EFF__SIMPLE_INVERSION: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
@@ -95,6 +106,24 @@ pub const COLOR_EFF__RED: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
      0.0,  0.0,  0.0,  0.0,  1.0,
 ] };
 
+// Negative Green
+pub const COLOR_EFF__NEGATIVE_CYAN: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
+     0.0, -0.3, -0.3,  0.0,  0.0,
+     0.0, -0.6, -0.6,  0.0,  0.0,
+     0.0, -0.1, -0.1,  0.0,  0.0,
+     0.0,  0.0,  0.0,  1.0,  0.0,
+     0.0,  1.0,  1.0,  0.0,  1.0,
+] };
+
+// Green
+pub const COLOR_EFF__CYAN: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
+     0.0,  0.3,  0.3,  0.0,  0.0,
+     0.0,  0.6,  0.6,  0.0,  0.0,
+     0.0,  0.1,  0.1,  0.0,  0.0,
+     0.0,  0.0,  0.0,  1.0,  0.0,
+     0.0,  0.0,  0.0,  0.0,  1.0,
+] };
+
 // Grayscale
 pub const COLOR_EFF__GRAYSCALE: MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
      0.3,  0.3,  0.3,  0.0,  0.0,
@@ -110,5 +139,49 @@ pub const COLOR_EFF__BLACK_AND_WHITE: MAGCOLOREFFECT = MAGCOLOREFFECT { transfor
     127.0,  127.0,   127.0,  0.0,  0.0,
     127.0,  127.0,   127.0,  0.0,  0.0,
       0.0,    0.0,     0.0,  1.0,  0.0,
-   -180.0, -180.0,  -180.0,  0.0,  1.0,
+     -0.5,   -0.5,    -0.5,  1.0,  1.0,
 ] };
+
+
+pub const COLOR_EFFECTS : [MAGCOLOREFFECT; 15] = [
+    COLOR_EFF__IDENTITY,
+    COLOR_EFF__SIMPLE_INVERSION,
+    COLOR_EFF__SMART_INVERSION,
+    COLOR_EFF__SMART_INVERSION_ALT1,
+    COLOR_EFF__SMART_INVERSION_ALT2,
+    COLOR_EFF__SMART_INVERSION_ALT3,
+    COLOR_EFF__SMART_INVERSION_ALT4,
+    COLOR_EFF__NEGATIVE_SEPIA,
+    COLOR_EFF__NEGATIVE_GRAYSCALE,
+    COLOR_EFF__NEGATIVE_RED,
+    COLOR_EFF__RED,
+    COLOR_EFF__NEGATIVE_CYAN,
+    COLOR_EFF__CYAN,
+    COLOR_EFF__GRAYSCALE,
+    COLOR_EFF__BLACK_AND_WHITE,
+];
+
+
+pub struct ColorEffectsCycler (AtomicUsize);
+
+pub static COLOR_EFFECTS_CYCLER : Lazy <ColorEffectsCycler> = Lazy::new (ColorEffectsCycler::new);
+
+impl ColorEffectsCycler {
+
+    pub fn new () -> ColorEffectsCycler {
+        ColorEffectsCycler (AtomicUsize::new(0))
+    }
+    pub fn cycle_next (&self) -> MAGCOLOREFFECT {
+        let cur = self.0.load(Ordering::Acquire);
+        let idx = (cur + 1) % COLOR_EFFECTS.len();
+        self.0.store (idx, Ordering::Release);
+        COLOR_EFFECTS [idx]
+    }
+    pub fn cycle_prev (&self) -> MAGCOLOREFFECT {
+        let cur = self.0.load(Ordering::Acquire);
+        let idx = (COLOR_EFFECTS.len() + cur - 1) % (COLOR_EFFECTS.len());
+        self.0.store (idx, Ordering::Release);
+        COLOR_EFFECTS [idx]
+    }
+
+}

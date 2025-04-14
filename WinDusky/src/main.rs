@@ -4,15 +4,17 @@
     windows_subsystem = "windows"
 )]
 
-use crate::win_dusky::hello_again;
 
 mod win_dusky;
+mod color_matrices;
 
 
 fn main() {
 
     println!("well, hello there!!");
 
-    hello_again();
+    unsafe {
+        win_dusky::run_it().expect("TODO: panic message");
+    }
 
 }

@@ -10,11 +10,5 @@ mod color_matrices;
 
 
 fn main() {
-
-    println!("well, hello there!!");
-
-    unsafe {
-        win_dusky::run_it().expect("TODO: panic message");
-    }
-
+    win_dusky::run_it().expect("ERROR running WinDusky");
 }

@@ -1,14 +1,17 @@
+use once_cell::sync::Lazy;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_I};
 use windows::Win32::UI::Magnification::{MagInitialize, MagSetColorEffect, MagSetWindowSource, MagUninitialize, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindowVisible, KillTimer, RegisterClassExW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, HICON, HWND_BOTTOM, HWND_TOP, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, IsWindowVisible, KillTimer, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, EVENT_SYSTEM_FOREGROUND, HCURSOR, HICON, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 
 
@@ -22,6 +25,20 @@ const TIMER_ID : usize = 0xdeadbeef;
 const TIMER_TICK_MS : u32 = 16;
 
 const HOTKEY_ID__TOGGLE : i32 = 1;
+
+
+
+// Structure to hold magnifier window handle, associated with host window
+#[derive (Default)]
+struct OverlayDat {
+    host   : HwndAtomic,
+    mag    : HwndAtomic,
+    target : HwndAtomic,
+}
+
+#[allow (non_upper_case_globals)]
+static overlay : Lazy<OverlayDat> = Lazy::new (|| OverlayDat::default());
+
 
 
 
@@ -72,10 +89,7 @@ pub fn run_it() -> Result<(), String> { unsafe {
         let _ = MagUninitialize();
         return Err(format!("CreateWindowExW (Host) failed with error: {:?}", GetLastError()));
     };
-
-    // we'll setup a user data in the host window where we can later store/retrieve hwnd_mag
-    let mut mag_data = MagWindowData { hwnd_mag : HWND::default() };
-    SetWindowLongPtrW (hwnd_host, GWLP_USERDATA, &mut mag_data as *mut _ as isize);
+    overlay.host.store(hwnd_host);
 
 
     // Create Magnifier Control as child window of host with class WC_MAGNIFIERW
@@ -86,9 +100,7 @@ pub fn run_it() -> Result<(), String> { unsafe {
         let _ = MagUninitialize();
         return Err(format!("CreateWindowExW (Magnifier) failed with error: {:?}", GetLastError()));
     };
-
-    // we'll want to store this so hwnd_host can access it and invalidate hwnd_mag in its loop
-    mag_data.hwnd_mag = hwnd_mag;
+    overlay.mag.store(hwnd_mag);
 
 
     // apply color effect
@@ -97,17 +109,22 @@ pub fn run_it() -> Result<(), String> { unsafe {
         return Err(format!("MagSetColorEffect failed with error: {:?}", GetLastError()));
     }
 
-
     // lets setup a timer so it keeps getting repainted
     SetTimer (Some(hwnd_host), TIMER_ID, TIMER_TICK_MS, None);
 
 
-    // Register the hotkey (Alt + Win + I)
+    // register the hotkey (Alt + Win + I)
     if RegisterHotKey (Some(hwnd_host), HOTKEY_ID__TOGGLE, MOD_ALT | MOD_WIN | MOD_NOREPEAT, VK_I.0 as u32) .is_err() {
         eprintln!("Warning: Hotkey Registration failed with error: {:?}", GetLastError());
     }
     // Note that we'll only do positioning/sizing/sourcing of the overlay when hotkey enables the overlay
 
+
+    // lets also setup a win-event hook to monitor fgnd change so we can maintain the overlay z-ordering
+    let _ = SetWinEventHook (
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None,
+        Some(win_event_proc), 0, 0, WINEVENT_OUTOFCONTEXT,
+    );
 
     // finally we just babysit the host hwnd
     let mut msg: MSG = std::mem::zeroed();
@@ -126,20 +143,16 @@ pub fn run_it() -> Result<(), String> { unsafe {
 } }
 
 
-fn toggle_overlay (host:HWND, mag:HWND) { unsafe {
 
-    if IsWindowVisible(host).as_bool() {
-        let _ = ShowWindow (host, SW_HIDE);
-        return
-    }
 
-    // we'll size both the host and mag to fit the fgnd hwnd when hotkey was invoked
+fn reset_overlay (host:HWND, mag:HWND, target:HWND) { unsafe {
 
-    let fgnd = GetForegroundWindow();
+    // we'll size both the host and mag to fit the target hwnd when hotkey was invoked
+
     let mut rect = RECT::default();
 
     //let _ = GetWindowRect (fgnd, &mut rect) .is_err();
-    let _ = DwmGetWindowAttribute (fgnd, DWMWA_EXTENDED_FRAME_BOUNDS, &mut rect as *mut RECT as _, size_of::<RECT>() as u32);
+    let _ = DwmGetWindowAttribute (target, DWMWA_EXTENDED_FRAME_BOUNDS, &mut rect as *mut RECT as _, size_of::<RECT>() as u32);
     // ^^ getting window-rect incluedes (often transparent) padding, which we dont want to invert, so we'll use window frame instead
 
     let _ = MagSetWindowSource (mag, rect);
@@ -150,19 +163,22 @@ fn toggle_overlay (host:HWND, mag:HWND) { unsafe {
     // for overlay host z-positioning .. we want the overlay to be just above the target hwnd, but not topmost
     // (the hope is to keep maintaining that such that other windows can come in front normally as well)
 
-    let _ = SetWindowPos (host, Some(fgnd), x, y, w, h, SWP_NOACTIVATE);
+    let _ = SetWindowPos (host, Some(target), x, y, w, h, SWP_NOACTIVATE);
     let _ = ShowWindow (host, SW_SHOW);
-    let _ = SetWindowPos (fgnd, Some(host), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
+    let _ = SetWindowPos (target, Some(host), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
 
     // todo : prob want to enable/disable timer etc here too
 
 } }
 
 
-// Structure to hold magnifier window handle, associated with host window
-struct MagWindowData {
-    hwnd_mag: HWND,
+
+
+// Helper function to convert Rust string slices to null-terminated UTF-16 Vec<u16>
+fn wide_string(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
+
 
 
 // Window Procedure for the Host Window
@@ -171,13 +187,17 @@ unsafe extern "system" fn host_window_proc (
 ) -> LRESULT {
     match msg {
         WM_TIMER if wparam.0 == TIMER_ID => {
-            let mag_data = GetWindowLongPtrW (hwnd, GWLP_USERDATA) as *mut MagWindowData;
-            let _ = InvalidateRect(Some((&*mag_data).hwnd_mag), None, false);
+            let _ = InvalidateRect(Some(overlay.mag.load().into()), None, false);
             LRESULT(0)
         },
         WM_HOTKEY if wparam.0 == HOTKEY_ID__TOGGLE as _ => {
-            let mag_data = GetWindowLongPtrW (hwnd, GWLP_USERDATA) as *mut MagWindowData;
-            toggle_overlay (hwnd, (*mag_data).hwnd_mag);
+            if IsWindowVisible(hwnd).as_bool() {
+                let _ = ShowWindow (hwnd, SW_HIDE);
+            } else {
+                let fgnd = GetForegroundWindow();
+                overlay.target.store (fgnd);
+                reset_overlay (hwnd, overlay.mag.load().into(), fgnd);
+            }
             LRESULT(0)
         },
         _ => DefWindowProcW(hwnd, msg, wparam, lparam), // Default handling for other messages
@@ -185,7 +205,78 @@ unsafe extern "system" fn host_window_proc (
 }
 
 
-// Helper function to convert Rust string slices to null-terminated UTF-16 Vec<u16>
-fn wide_string(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+
+
+// Callback handling for our win-event hook
+unsafe extern "system" fn win_event_proc (
+    _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, _id_object: i32,
+    _id_child: i32, _event_thread: u32, _event_time: u32,
+) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        let target = HWND::from (overlay.target.load());
+        if hwnd == target {
+            let host = HWND::from (overlay.host.load());
+            if IsWindowVisible(host).as_bool() {
+                let mag = HWND::from (overlay.mag.load());
+                reset_overlay (host, mag, target)
+            }
+        }
+    }
 }
+
+
+
+
+
+// we'll define our own new-type of Hwnd mostly coz HWND doesnt implement Debug, Hash etc
+# [ derive (Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash) ]
+pub struct Hwnd (pub(crate) isize);
+
+impl Hwnd {
+    pub fn is_valid (&self) -> bool { self.0 != 0 }
+}
+
+impl From <HWND> for Hwnd {
+    fn from (hwnd:HWND) -> Self { Hwnd(hwnd.0 as _) }
+}
+impl From <Hwnd> for HWND {
+    fn from (hwnd:Hwnd) -> Self { HWND(hwnd.0 as _) }
+}
+impl From <Hwnd> for isize {
+    fn from (hwnd:Hwnd) -> Self { hwnd.0 }
+}
+impl From <isize> for Hwnd {
+    fn from (hwnd: isize) -> Self { Hwnd(hwnd) }
+}
+
+
+
+
+// and the atomic version of Hwnd for storage
+# [ derive (Debug, Default) ]
+pub struct HwndAtomic (AtomicIsize);
+
+impl HwndAtomic {
+    pub fn load (&self) -> Hwnd {
+        self.0.load (Ordering::Acquire) .into()
+    }
+    pub fn store (&self, hwnd: impl Into<Hwnd>) {
+        self.0 .store (hwnd.into().0, Ordering::Release)
+    }
+    pub fn clear (&self) {
+        self.store (Hwnd(0))
+    }
+    pub fn contains (&self, hwnd: impl Into<Hwnd>) -> bool {
+        self.load() == hwnd.into()
+    }
+    pub fn is_valid (&self) -> bool {
+        self.load() != Hwnd(0)
+    }
+}
+impl From <HwndAtomic> for Hwnd {
+    fn from (h_at: HwndAtomic) -> Hwnd { h_at.load() }
+}
+impl From <HwndAtomic> for HWND {
+    fn from (h_at: HwndAtomic) -> HWND { h_at.load().into() }
+}
+

@@ -5,10 +5,10 @@
 )]
 
 
-mod win_dusky;
-mod color_matrices;
+mod dusky;
+mod effects;
 
 
 fn main() {
-    win_dusky::start_overlay().expect("ERROR running WinDusky");
+    dusky::start_overlay().expect("ERROR running WinDusky");
 }

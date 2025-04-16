@@ -60,4 +60,5 @@ blocks_in_conditions   = "allow"
 needless_else          = "allow"
 collapsible_if         = "allow"
 collapsible_else_if    = "allow"
+bool_comparison        = "allow"
 

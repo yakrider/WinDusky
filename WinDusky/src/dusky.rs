@@ -1,8 +1,9 @@
+//use no_deadlocks::RwLock;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{OnceLock, RwLock};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
@@ -12,7 +13,7 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_I, VK_OEM_COMMA, VK_OEM_PERIOD};
 use windows::Win32::UI::Magnification::{MagInitialize, MagSetColorEffect, MagSetWindowSource, MagUninitialize, MAGCOLOREFFECT, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, KillTimer, PostMessageW, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, HCURSOR, HICON, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowLongW, KillTimer, PostMessageW, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HCURSOR, HICON, HWND_TOPMOST, MSG, OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 
 
@@ -35,17 +36,19 @@ struct Overlay {
     host   : Hwnd,
     mag    : Hwnd,
     target : Hwnd,
-    marked : Flag,
     effect : ColorEffect,
+    marked : Flag,
+    is_top : Flag,
 }
 
 
 
-#[derive (Debug)]
+//#[derive (Debug)]
 pub struct WinDusky {
     inited    : Flag,
-    overlays  : Mutex <HashMap <Hwnd, Overlay>>,
+    overlays  : RwLock <HashMap <Hwnd, Overlay>>,
     cur_timer : AtomicUsize,
+    ov_top    : HwndAtomic,
 }
 
 
@@ -80,8 +83,9 @@ impl Overlay {
             host   : host.into(),
             mag    : mag.into(),
             target : target.into(),
-            marked : Flag::default(),
             effect : ColorEffect::default(),
+            marked : Flag::new(false),
+            is_top : Flag::new(false),
         };
 
         // we'll apply the default smart inversion color-effect .. can ofc be cycled through via hotkeys later
@@ -94,7 +98,7 @@ impl Overlay {
     } }
 
 
-    pub fn update (&self) { unsafe {
+    pub fn update (&self, wd: &WinDusky) { unsafe {
 
         //println!("updating overlay {:?}", self);
 
@@ -117,21 +121,43 @@ impl Overlay {
             eprintln!( "SetWindowPos (w,h) on mag-hwnd failed with error: {:?}", GetLastError());
         }
 
-        // for overlay host z-positioning .. we want the overlay to be just above the target hwnd, but not topmost
+        // for overlay host z-positioning .. we want the overlay to usually be just above the target hwnd, but not topmost
         // (the hope is to keep maintaining that such that other windows can come in front normally as well)
-
-        if SetWindowPos (host, Some(target), x, y, w, h, SWP_NOACTIVATE) .is_err() {
-            eprintln!( "SetWindowPos (x,y,w,h) on host failed with error: {:?}", GetLastError());
+        // however .. while its fgnd, we'll make it top to avoid flashing etc (while the host and target switch turns being in front)
+        // (and so then to keep these from lingering on top, we've added also sanitation to event listener itself)
+        let fgnd = GetForegroundWindow().into();
+        if self.target == fgnd {
+            // now if some other overlay was previously on-top, we'll want to un-top it first
+            let ov_top = wd.ov_top.load();
+            if ov_top.is_valid() && ov_top != self.target {
+                let overlays = wd.overlays.read().unwrap();
+                if let Some(overlay) = overlays .get (&ov_top) {
+                    overlay.resync_ov_z_order()
+                }
+            }
+            // Now we'd like the host to sit not just in front of target, but just 'topmost' it while target is fgnd
+            let _ = SetWindowPos (host, None,               x, y, w, h, SWP_SHOWWINDOW);
+            let _ = SetWindowPos (host, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
+            //dbg!(win_check_if_topmost(host.into()));
+            // ^^ to use TOPMOST, we must let it activate, otherwise windows set-fgnd rules will prevent it being put top
+            // .. (so for reliability, we'll do regular show-window first, then follow up with topmost which might get ignored)
+            self.is_top.set();
+            wd.ov_top .store(target);
+        } else {
+            // and if we're not fgnd, we want to instead go sit just in front of target
+            let _ = SetWindowPos (host, Some(target), x, y, w, h, SWP_NOACTIVATE);
+            self.resync_ov_z_order();
         }
-        if ShowWindow (host, SW_SHOWNOACTIVATE) .as_bool() == false {
-            eprintln!( "ShowWindow (SHOW) on host failed with error: {:?}", GetLastError());
-        }
-        if SetWindowPos (target, Some(host), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE) .is_err() {
-            eprintln!( "SetWindowPos (z-order) on tarrget failed with error: {:?}", GetLastError());
-        }
-
         self.marked.clear();
 
+    } }
+
+    pub fn resync_ov_z_order (&self) { unsafe {
+        let (host, target) = (self.host.into(), self.target.into());
+        self.is_top.clear();
+        let _ = SetWindowPos (host, Some(target), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
+        let _ = ShowWindow (host, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos (target, Some(host), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
     } }
 
 }
@@ -154,8 +180,9 @@ impl WinDusky {
         INSTANCE .get_or_init ( ||
             WinDusky {
                 inited    : Flag::new(false),
-                overlays  : Mutex::new(Default::default()),
-                cur_timer : Default::default()
+                overlays  : RwLock::new(HashMap::default()),
+                cur_timer : AtomicUsize::default(),
+                ov_top    : HwndAtomic::default(),
             }
         )
         // ^^ NOTE that init is not called here, and the user should to it at their convenience !!
@@ -214,13 +241,14 @@ impl WinDusky {
 
                 0x08   : EVENT_SYSTEM_CAPTURESTART
                 0x09   : EVENT_SYSTEM_CAPTUREEND
+                // ^^ w/o these, the target can end up z-ahead of overlay upon titlebar click etc
                 0x0A   : EVENT_SYSTEM_MOVESIZESTART
                 0x0B   : EVENT_SYSTEM_MOVESIZEEND
-                // ^^ w/o these, the target can end up z-ahead of overlay upon titlebar click
 
                 0x16   : EVENT_SYSTEM_MINIMIZESTART
                 0x17   : EVENT_SYSTEM_MINIMIZEEND
 
+                0x8000 : EVENT_OBJECT_CREATE
                 0x8001 : EVENT_OBJECT_DESTROY
                 0x8002 : EVENT_OBJECT_SHOW
                 0x8003 : EVENT_OBJECT_HIDE
@@ -229,9 +257,13 @@ impl WinDusky {
                 0x8017 : EVENT_OBJECT_CLOAKED
                 0x8018 : EVENT_OBJECT_UNCLOAKED
          */
-        let _ = SetWinEventHook ( 0x0003, 0x0017, None, Some(win_event_proc), 0, 0, 0 );
-        let _ = SetWinEventHook ( 0x8001, 0x8018, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x0003, 0x0003, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x0008, 0x000B, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x0016, 0x0017, None, Some(win_event_proc), 0, 0, 0 );
 
+        let _ = SetWinEventHook ( 0x8000, 0x8003, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x800B, 0x800B, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x8017, 0x8018, None, Some(win_event_proc), 0, 0, 0 );
 
 
         // finally we just babysit the message loop
@@ -243,24 +275,26 @@ impl WinDusky {
                 return Err(format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
             else if msg.message == WM_TIMER {
-                let overlays = self.overlays.lock().unwrap();
+                let overlays = self.overlays.read().unwrap();
                 for overlay in overlays.values() {
                     if overlay.marked.is_set() {
-                        overlay.update()
+                        overlay.update(self);
                     }
                     let _ = InvalidateRect (Some(overlay.mag.into()), None, false);
                 }
             }
             else if msg.message == WM_HOTKEY {
 
-                let target = GetForegroundWindow();
-                let mut overlays = self.overlays.lock().unwrap();
+                let target = GetForegroundWindow().into();
+                let mut overlays = self.overlays.write().unwrap();
 
-                if let Some(overlay) = overlays.get(&target.into()) {
+                if let Some(overlay) = overlays.get(&target) {
                     match msg.wParam.0 {
                         HOTKEY_ID__TOGGLE => {
-                            overlays.remove (&target.into());
-                            // ^^ the returned value is dropped and so its hwnds will get cleaned up
+                            if let Some(overlay) = overlays.remove (&target) {
+                                // ^^ the returned value is dropped and so its hwnds will get cleaned up
+                                if overlay.target == self.ov_top.load() { self.ov_top.clear(); }
+                            }
                             if overlays.is_empty() { self.disable_timer() }
                             tray::update_tray__overlay_count (overlays.len());
                         },
@@ -274,9 +308,9 @@ impl WinDusky {
                     }
                 }
                 else if msg.wParam.0 == HOTKEY_ID__TOGGLE {
-                    if let Ok(overlay) = Overlay::new (target) {
+                    if let Ok(overlay) = Overlay::new (target.into()) {
                         if overlays.is_empty() { self.ensure_timer_running() }
-                        overlays.insert (target.into(), overlay);
+                        overlays.insert (target, overlay);
                         tray::update_tray__overlay_count (overlays.len());
                     }
                 }
@@ -303,7 +337,7 @@ impl WinDusky {
 
 
     pub(crate) fn clear_overlays (&self) { unsafe {
-        let mut overlays = self.overlays.lock().unwrap();
+        let mut overlays = self.overlays.write().unwrap();
         let hwnds : Vec<_> = overlays.keys().copied().collect();
         for hwnd in hwnds {
             if let Some(overlay) = overlays.remove(&hwnd) {
@@ -311,13 +345,14 @@ impl WinDusky {
                 let _ = InvalidateRect (Some(hwnd.into()), None, true);
             }
         }
+        self.ov_top.clear();
         self.disable_timer();
         tray::update_tray__overlay_count(0);
     } }
 
 
     pub(crate) fn overlays_count (&self) -> usize {
-        let overlays = self.overlays.lock().unwrap();
+        let overlays = self.overlays.read().unwrap();
         overlays.len()
     }
 
@@ -343,6 +378,12 @@ fn wide_string(s: &str) -> Vec<u16> {
 }
 
 
+#[allow (dead_code)] pub fn win_check_if_topmost (hwnd: Hwnd) -> bool { unsafe {
+    GetWindowLongW (hwnd.into(), GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 == WS_EX_TOPMOST.0
+} }
+
+
+
 
 // Window Procedure for the Host Window
 unsafe extern "system" fn host_window_proc (
@@ -357,11 +398,14 @@ unsafe extern "system" fn host_window_proc (
 
 // Callback handling for our win-event hook
 unsafe extern "system" fn win_event_proc (
-    _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, _id_object: i32,
+    _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, id_object: i32,
     _id_child: i32, _event_thread: u32, _event_time: u32,
 ) {
+    if id_object != OBJID_WINDOW.0 { return; }
+    // ^^ we only care about window level events
+
     let wd = WinDusky::instance();
-    let mut overlays = wd.overlays.lock().unwrap();
+    let mut overlays = wd.overlays.write().unwrap();
 
     //// debug printout of all events .. useful during dev
     //if !hwnd.is_invalid() && wd.overlays.lock().unwrap().contains_key(&hwnd.into()) {
@@ -369,16 +413,26 @@ unsafe extern "system" fn win_event_proc (
     //} // ^^ debug printouts (enable all events first)
 
     if let Some(overlay) = overlays .get (&hwnd.into()) {
-        //println!("got event for {:?}", hwnd);
+        //println!("got event {:#06x} for hwnd {:?}, id-object {:#06x}, id-child {:#06x}", event, hwnd, id_object, _id_child);
         if event == EVENT_OBJECT_DESTROY ||
             event == EVENT_OBJECT_HIDE ||
             event == EVENT_OBJECT_CLOAKED
         {
-            overlays .remove (&hwnd.into());
+            if let Some(overlay) = overlays .remove (&hwnd.into()) {
+                if overlay.target == wd.ov_top.load() { wd.ov_top.clear(); }
+            }
             if overlays.is_empty() { wd.disable_timer() }
+            tray::update_tray__overlay_count (overlays.len());
         }
         else {
             overlay.marked.set();
+        }
+    }
+    else if event == EVENT_SYSTEM_FOREGROUND {
+        // i.e non overlaid window came to fgnd
+        if let Some(overlay) = overlays .get (&wd.ov_top.load()) {
+            wd.ov_top.clear();
+            overlay.resync_ov_z_order();
         }
     }
 }

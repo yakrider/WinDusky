@@ -4,11 +4,21 @@
     windows_subsystem = "windows"
 )]
 
+use std::thread;
 
 mod dusky;
 mod effects;
+mod tray;
 
 
 fn main() {
-    dusky::start_overlay().expect("ERROR running WinDusky");
+
+    let wd = dusky::WinDusky::instance();
+
+    thread::spawn (|| {
+        tray::start_system_tray_monitor();
+    });
+
+    wd .start_monitor() .expect("ERROR running WinDusky");
+
 }

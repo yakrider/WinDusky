@@ -1,9 +1,8 @@
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
@@ -13,13 +12,12 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_I, VK_OEM_COMMA, VK_OEM_PERIOD};
 use windows::Win32::UI::Magnification::{MagInitialize, MagSetColorEffect, MagSetWindowSource, MagUninitialize, MAGCOLOREFFECT, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, KillTimer, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, HCURSOR, HICON, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, KillTimer, PostMessageW, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, HCURSOR, HICON, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 
 
 use crate::effects::*;
-
-
+use crate::tray;
 
 const HOST_WINDOW_CLASS_NAME : &str = "WinDuskyOverlayWindowClass";
 const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host Window";
@@ -43,6 +41,16 @@ struct Overlay {
 
 
 
+#[derive (Debug)]
+pub struct WinDusky {
+    inited    : Flag,
+    overlays  : Mutex <HashMap <Hwnd, Overlay>>,
+    cur_timer : AtomicUsize,
+}
+
+
+
+
 impl Overlay {
 
     fn new (target:HWND) -> Result <Overlay, String> { unsafe {
@@ -51,7 +59,7 @@ impl Overlay {
 
         // Create the host for the magniier control
         let Ok(host) = CreateWindowExW (
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR::from_raw (wide_string(HOST_WINDOW_CLASS_NAME).as_ptr()),
             PCWSTR::from_raw (wide_string(HOST_WINDOW_TITLE).as_ptr()),
             WS_POPUP, 0, 0, 0, 0, None, None, h_inst, None
@@ -88,7 +96,7 @@ impl Overlay {
 
     pub fn update (&self) { unsafe {
 
-        println!("updating overlay {:?}", self);
+        //println!("updating overlay {:?}", self);
 
         // we'll size both the host and mag to fit the target hwnd when hotkey was invoked
 
@@ -131,144 +139,189 @@ impl Overlay {
 
 impl Drop for Overlay {
     fn drop (&mut self) { unsafe {
-        let host : HWND = self.host.into();
-        let _ = DestroyWindow (host);
+        let _ = DestroyWindow (self.host.into());
     } }
 }
 
 
 
-static OVERLAYS : Lazy <Mutex <HashMap <Hwnd, Overlay>>> = Lazy::new (|| Mutex::new (Default::default()));
-
-static CUR_TIMER_ID : Lazy <AtomicUsize> = Lazy::new (AtomicUsize::default);
 
 
-pub fn start_overlay() -> Result<(), String> { unsafe {
+impl WinDusky {
 
-    let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    // Initialize Magnification API
-    if MagInitialize() == FALSE {
-        return Err(format!("MagInitialize failed with error: {:?}", GetLastError()));
+    pub fn instance() -> &'static WinDusky {
+        static INSTANCE : OnceLock <WinDusky> = OnceLock::new();
+        INSTANCE .get_or_init ( ||
+            WinDusky {
+                inited    : Flag::new(false),
+                overlays  : Mutex::new(Default::default()),
+                cur_timer : Default::default()
+            }
+        )
+        // ^^ NOTE that init is not called here, and the user should to it at their convenience !!
     }
 
 
-    // Register Host Window Class
-    let Ok(instance) = GetModuleHandleW(None) else {
-        return Err(format!("GetModuleHandleW failed with error: {:?}", GetLastError()));
-    };
-    let wc = WNDCLASSEXW {
-        cbSize: size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(host_window_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: instance.into(),
-        hIcon: HICON::default(),
-        hCursor: HCURSOR::default(),
-        hbrBackground: HBRUSH::default(),
-        lpszMenuName: PCWSTR::null(),
-        lpszClassName: PCWSTR::from_raw (wide_string(HOST_WINDOW_CLASS_NAME).as_ptr()),
-        hIconSm: HICON::default(),
-    };
-    if RegisterClassExW(&wc) == 0 {
-        if GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
-            return Err(format!("RegisterClassExW failed with error: {:?}", GetLastError()));
+    pub fn start_monitor (&self) -> Result<(), String> { unsafe {
+
+        if self.inited.is_set() {
+            return Ok(())
+        };
+        self.inited.set();
+
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+        // Initialize Magnification API
+        if MagInitialize() == FALSE {
+            return Err(format!("MagInitialize failed with error: {:?}", GetLastError()));
         }
-    }
-
-    // register the toggle hotkey (Alt + Win + I),  and the effect-cycler hotkey (Alt + Win + '>'/'<')
-    let _ = RegisterHotKey (None, HOTKEY_ID__TOGGLE as _,       MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_I.0 as u32);
-    let _ = RegisterHotKey (None, HOTKEY_ID__NEXT_EFFECT as _,  MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_OEM_PERIOD.0 as u32);
-    let _ = RegisterHotKey (None, HOTKEY_ID__PREV_EFFECT as _,  MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_OEM_COMMA.0 as u32);
 
 
-    // lets also setup a win-event hook to monitor fgnd change so we can maintain the overlay z-ordering
-    /*
-        We want to cover at least :
-            0x03   : EVENT_SYSTEM_FOREGROUND
-
-            0x08   : EVENT_SYSTEM_CAPTURESTART
-            0x09   : EVENT_SYSTEM_CAPTUREEND
-            0x0A   : EVENT_SYSTEM_MOVESIZESTART
-            0x0B   : EVENT_SYSTEM_MOVESIZEEND
-            // ^^ w/o these, the target can end up z-ahead of overlay upon titlebar click
-
-            0x16   : EVENT_SYSTEM_MINIMIZESTART
-            0x17   : EVENT_SYSTEM_MINIMIZEEND
-
-            0x8001 : EVENT_OBJECT_DESTROY
-            0x8002 : EVENT_OBJECT_SHOW
-            0x8003 : EVENT_OBJECT_HIDE
-            0x800B : EVENT_OBJECT_LOCATIONCHANGE
-
-            0x8017 : EVENT_OBJECT_CLOAKED
-            0x8018 : EVENT_OBJECT_UNCLOAKED
-     */
-    let _ = SetWinEventHook ( 0x0003, 0x0017, None, Some(win_event_proc), 0, 0, 0 );
-    let _ = SetWinEventHook ( 0x8001, 0x8018, None, Some(win_event_proc), 0, 0, 0 );
-
-
-
-    // finally we just babysit the message loop
-    let mut msg: MSG = std::mem::zeroed();
-
-    loop {
-        if GetMessageW(&mut msg, None, 0, 0) == false {
-            let _ = MagUninitialize();
-            return Err(format!("GetMessageW failed with error: {:?}", GetLastError()));
-        }
-        else if msg.message == WM_TIMER {
-            let overlays = OVERLAYS.lock().unwrap();
-            for overlay in overlays.values() {
-                if overlay.marked.is_set() {
-                    overlay.update()
-                }
-                let _ = InvalidateRect (Some(overlay.mag.into()), None, false);
+        // Register Host Window Class
+        let Ok(instance) = GetModuleHandleW(None) else {
+            return Err(format!("GetModuleHandleW failed with error: {:?}", GetLastError()));
+        };
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(host_window_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: instance.into(),
+            hIcon: HICON::default(),
+            hCursor: HCURSOR::default(),
+            hbrBackground: HBRUSH::default(),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: PCWSTR::from_raw (wide_string(HOST_WINDOW_CLASS_NAME).as_ptr()),
+            hIconSm: HICON::default(),
+        };
+        if RegisterClassExW(&wc) == 0 {
+            if GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+                return Err(format!("RegisterClassExW failed with error: {:?}", GetLastError()));
             }
         }
-        else if msg.message == WM_HOTKEY {
 
-            let target = GetForegroundWindow();
-            let mut overlays = OVERLAYS.lock().unwrap();
+        // register the toggle hotkey (Alt + Win + I),  and the effect-cycler hotkey (Alt + Win + '>'/'<')
+        let _ = RegisterHotKey (None, HOTKEY_ID__TOGGLE as _,       MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_I.0 as u32);
+        let _ = RegisterHotKey (None, HOTKEY_ID__NEXT_EFFECT as _,  MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_OEM_PERIOD.0 as u32);
+        let _ = RegisterHotKey (None, HOTKEY_ID__PREV_EFFECT as _,  MOD_ALT | MOD_WIN | MOD_NOREPEAT,  VK_OEM_COMMA.0 as u32);
 
-            if let Some(overlay) = overlays.get(&target.into()) {
-                match msg.wParam.0 {
-                    HOTKEY_ID__TOGGLE => {
-                        overlays.remove (&target.into());
-                        // ^^ the returned value is dropped and so its hwnds will get cleaned up
-                        if overlays.is_empty() {
-                            let _ = KillTimer (None, CUR_TIMER_ID.load(Ordering::Acquire));
-                        }
-                    },
-                    HOTKEY_ID__NEXT_EFFECT => {
-                        apply_color_effect (overlay.mag, overlay.effect.cycle_next());
-                    },
-                    HOTKEY_ID__PREV_EFFECT => {
-                        apply_color_effect (overlay.mag, overlay.effect.cycle_prev());
-                    },
-                    _ => { }
-                }
+
+        // lets also setup a win-event hook to monitor fgnd change so we can maintain the overlay z-ordering
+        /*
+            We want to cover at least :
+                0x03   : EVENT_SYSTEM_FOREGROUND
+
+                0x08   : EVENT_SYSTEM_CAPTURESTART
+                0x09   : EVENT_SYSTEM_CAPTUREEND
+                0x0A   : EVENT_SYSTEM_MOVESIZESTART
+                0x0B   : EVENT_SYSTEM_MOVESIZEEND
+                // ^^ w/o these, the target can end up z-ahead of overlay upon titlebar click
+
+                0x16   : EVENT_SYSTEM_MINIMIZESTART
+                0x17   : EVENT_SYSTEM_MINIMIZEEND
+
+                0x8001 : EVENT_OBJECT_DESTROY
+                0x8002 : EVENT_OBJECT_SHOW
+                0x8003 : EVENT_OBJECT_HIDE
+                0x800B : EVENT_OBJECT_LOCATIONCHANGE
+
+                0x8017 : EVENT_OBJECT_CLOAKED
+                0x8018 : EVENT_OBJECT_UNCLOAKED
+         */
+        let _ = SetWinEventHook ( 0x0003, 0x0017, None, Some(win_event_proc), 0, 0, 0 );
+        let _ = SetWinEventHook ( 0x8001, 0x8018, None, Some(win_event_proc), 0, 0, 0 );
+
+
+
+        // finally we just babysit the message loop
+        let mut msg: MSG = std::mem::zeroed();
+
+        loop {
+            if GetMessageW(&mut msg, None, 0, 0) == false {
+                let _ = MagUninitialize();
+                return Err(format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
-            else if msg.wParam.0 == HOTKEY_ID__TOGGLE {
-                if let Ok(overlay) = Overlay::new (target) {
-                    if overlays.is_empty() {
-                        let timer_id = SetTimer (None, 0, TIMER_TICK_MS, None);
-                        CUR_TIMER_ID.store (timer_id, Ordering::Release);
+            else if msg.message == WM_TIMER {
+                let overlays = self.overlays.lock().unwrap();
+                for overlay in overlays.values() {
+                    if overlay.marked.is_set() {
+                        overlay.update()
                     }
-                    overlays.insert (target.into(), overlay);
+                    let _ = InvalidateRect (Some(overlay.mag.into()), None, false);
                 }
             }
-            //dbg!(overlays);
+            else if msg.message == WM_HOTKEY {
+
+                let target = GetForegroundWindow();
+                let mut overlays = self.overlays.lock().unwrap();
+
+                if let Some(overlay) = overlays.get(&target.into()) {
+                    match msg.wParam.0 {
+                        HOTKEY_ID__TOGGLE => {
+                            overlays.remove (&target.into());
+                            // ^^ the returned value is dropped and so its hwnds will get cleaned up
+                            if overlays.is_empty() { self.disable_timer() }
+                            tray::update_tray__overlay_count (overlays.len());
+                        },
+                        HOTKEY_ID__NEXT_EFFECT => {
+                            apply_color_effect (overlay.mag, overlay.effect.cycle_next());
+                        },
+                        HOTKEY_ID__PREV_EFFECT => {
+                            apply_color_effect (overlay.mag, overlay.effect.cycle_prev());
+                        },
+                        _ => { }
+                    }
+                }
+                else if msg.wParam.0 == HOTKEY_ID__TOGGLE {
+                    if let Ok(overlay) = Overlay::new (target) {
+                        if overlays.is_empty() { self.ensure_timer_running() }
+                        overlays.insert (target.into(), overlay);
+                        tray::update_tray__overlay_count (overlays.len());
+                    }
+                }
+                //dbg!(overlays);
+            }
+            else {
+                //let _ = TranslateMessage(&msg);
+                // ^^ not needed as we dont do any gui w text etc
+                DispatchMessageW(&msg);
+            }
         }
-        else {
-            //let _ = TranslateMessage(&msg);
-            // ^^ not needed as we dont do any gui w text etc
-            DispatchMessageW(&msg);
+
+    } }
+
+
+    pub fn ensure_timer_running (&self) { unsafe {
+        let timer_id = SetTimer (None, 0, TIMER_TICK_MS, None);
+        self.cur_timer .store (timer_id, Ordering::Release);
+    } }
+
+    pub fn disable_timer (&self) { unsafe {
+        let _ = KillTimer (None, self.cur_timer .load(Ordering::Acquire));
+    } }
+
+
+    pub(crate) fn clear_overlays (&self) { unsafe {
+        let mut overlays = self.overlays.lock().unwrap();
+        let hwnds : Vec<_> = overlays.keys().copied().collect();
+        for hwnd in hwnds {
+            if let Some(overlay) = overlays.remove(&hwnd) {
+                let _ = PostMessageW (Some(overlay.host.into()), WM_CLOSE, Default::default(), Default::default());
+                let _ = InvalidateRect (Some(hwnd.into()), None, true);
+            }
         }
+        self.disable_timer();
+        tray::update_tray__overlay_count(0);
+    } }
+
+
+    pub(crate) fn overlays_count (&self) -> usize {
+        let overlays = self.overlays.lock().unwrap();
+        overlays.len()
     }
 
-} }
+}
 
 
 
@@ -307,12 +360,13 @@ unsafe extern "system" fn win_event_proc (
     _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, _id_object: i32,
     _id_child: i32, _event_thread: u32, _event_time: u32,
 ) {
+    let wd = WinDusky::instance();
+    let mut overlays = wd.overlays.lock().unwrap();
+
     //// debug printout of all events .. useful during dev
-    //if !hwnd.is_invalid() && hwnd == overlay.target.load().into() {
+    //if !hwnd.is_invalid() && wd.overlays.lock().unwrap().contains_key(&hwnd.into()) {
     //    println!("{:#06x}",event);
     //} // ^^ debug printouts (enable all events first)
-
-    let mut overlays = OVERLAYS.lock().unwrap();
 
     if let Some(overlay) = overlays .get (&hwnd.into()) {
         //println!("got event for {:?}", hwnd);
@@ -321,6 +375,7 @@ unsafe extern "system" fn win_event_proc (
             event == EVENT_OBJECT_CLOAKED
         {
             overlays .remove (&hwnd.into());
+            if overlays.is_empty() { wd.disable_timer() }
         }
         else {
             overlay.marked.set();

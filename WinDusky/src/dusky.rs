@@ -1,24 +1,31 @@
+#![ allow (non_snake_case) ]
+
 //use no_deadlocks::RwLock;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
+use std::thread;
+use std::time::Duration;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_I, VK_OEM_COMMA, VK_OEM_PERIOD};
 use windows::Win32::UI::Magnification::{MagInitialize, MagSetColorEffect, MagSetWindowSource, MagUninitialize, MAGCOLOREFFECT, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowLongW, KillTimer, PostMessageW, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HCURSOR, HICON, HWND_TOPMOST, MSG, OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindow, GetWindowLongW, KillTimer, PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowPos, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, GW_HWNDPREV, HCURSOR, HICON, HWND_TOP, HWND_TOPMOST, MSG, OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 
 
 use crate::effects::*;
+use crate::rules::{RulesMonitor, RulesValue};
 use crate::tray;
+use crate::types::*;
 
 const HOST_WINDOW_CLASS_NAME : &str = "WinDuskyOverlayWindowClass";
 const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host Window";
@@ -29,6 +36,9 @@ const HOTKEY_ID__TOGGLE      : usize = 1;
 const HOTKEY_ID__NEXT_EFFECT : usize = 2;
 const HOTKEY_ID__PREV_EFFECT : usize = 3;
 
+const WM_APP__REQ_UPDATE         : u32 = WM_APP + 1;
+const WM_APP__REQ_CREATE_OVERLAY : u32 = WM_APP + 2;
+
 
 
 #[derive (Default, Debug)]
@@ -36,7 +46,8 @@ struct Overlay {
     host   : Hwnd,
     mag    : Hwnd,
     target : Hwnd,
-    effect : ColorEffect,
+
+    effect : ColorEffectAtomic,
     marked : Flag,
     is_top : Flag,
 }
@@ -45,10 +56,13 @@ struct Overlay {
 
 //#[derive (Debug)]
 pub struct WinDusky {
-    inited    : Flag,
-    overlays  : RwLock <HashMap <Hwnd, Overlay>>,
-    cur_timer : AtomicUsize,
-    ov_top    : HwndAtomic,
+
+    pub(crate) rules : &'static RulesMonitor,
+
+    thread_id  : AtomicU32,
+    overlays   : RwLock <HashMap <Hwnd, Overlay>>,
+    cur_timer  : AtomicUsize,
+    ov_topmost : HwndAtomic,
 }
 
 
@@ -56,7 +70,7 @@ pub struct WinDusky {
 
 impl Overlay {
 
-    fn new (target:HWND) -> Result <Overlay, String> { unsafe {
+    fn new (target:Hwnd, effect:ColorEffect) -> Result <Overlay, String> { unsafe {
 
         let h_inst : Option<HINSTANCE> = GetModuleHandleW(None) .ok() .map(|h| h.into());
 
@@ -71,7 +85,7 @@ impl Overlay {
         };
 
         // Create Magnifier Control as child window of host with class WC_MAGNIFIERW
-        let Ok(mag) = CreateWindowExW(
+        let Ok(mag) = CreateWindowExW (
             WINDOW_EX_STYLE::default(), WC_MAGNIFIERW, PCWSTR::default(), WS_CHILD | WS_VISIBLE,
             0, 0, 0, 0, Some(host), None, h_inst, None,
         ) else {
@@ -82,8 +96,8 @@ impl Overlay {
         let overlay = Overlay {
             host   : host.into(),
             mag    : mag.into(),
-            target : target.into(),
-            effect : ColorEffect::default(),
+            target,
+            effect : ColorEffectAtomic::new (effect),
             marked : Flag::new(false),
             is_top : Flag::new(false),
         };
@@ -101,6 +115,9 @@ impl Overlay {
     pub fn update (&self, wd: &WinDusky) { unsafe {
 
         //println!("updating overlay {:?}", self);
+
+        // lets clear the flag upfront before we start changing stuff (so it can be marked dirtied in the mean time)
+        self.marked.clear();
 
         // we'll size both the host and mag to fit the target hwnd when hotkey was invoked
 
@@ -125,39 +142,38 @@ impl Overlay {
         // (the hope is to keep maintaining that such that other windows can come in front normally as well)
         // however .. while its fgnd, we'll make it top to avoid flashing etc (while the host and target switch turns being in front)
         // (and so then to keep these from lingering on top, we've added also sanitation to event listener itself)
-        let fgnd = GetForegroundWindow().into();
+
+        let fgnd : Hwnd = GetForegroundWindow().into();
         if self.target == fgnd {
             // now if some other overlay was previously on-top, we'll want to un-top it first
-            let ov_top = wd.ov_top.load();
+            let ov_top = wd.ov_topmost.load();
             if ov_top.is_valid() && ov_top != self.target {
-                let overlays = wd.overlays.read().unwrap();
-                if let Some(overlay) = overlays .get (&ov_top) {
-                    overlay.resync_ov_z_order()
-                }
+               let overlays = wd.overlays.read().unwrap();
+               if let Some(overlay) = overlays .get (&ov_top) {
+                   overlay.resync_ov_z_order()
+               }
             }
-            // Now we'd like the host to sit not just in front of target, but just 'topmost' it while target is fgnd
-            let _ = SetWindowPos (host, None,               x, y, w, h, SWP_SHOWWINDOW);
-            let _ = SetWindowPos (host, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
-            //dbg!(win_check_if_topmost(host.into()));
-            // ^^ to use TOPMOST, we must let it activate, otherwise windows set-fgnd rules will prevent it being put top
-            // .. (so for reliability, we'll do regular show-window first, then follow up with topmost which might get ignored)
-            self.is_top.set();
-            wd.ov_top .store(target);
-        } else {
-            // and if we're not fgnd, we want to instead go sit just in front of target
-            let _ = SetWindowPos (host, Some(target), x, y, w, h, SWP_NOACTIVATE);
-            self.resync_ov_z_order();
         }
-        self.marked.clear();
+
+        // now first, we'll do the general z-order repositioning
+        let hwnd_insert = GetWindow (target, GW_HWNDPREV) .unwrap_or(HWND_TOP);
+        let _ = SetWindowPos (host, None,               x, y, w, h,  SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW);
+        let _ = SetWindowPos (host, Some(hwnd_insert),  0, 0, 0, 0,  SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOREDRAW);
+        // ^^ the two step appears necessary, as w hwnd-insert specified, it doesnt seem to move/reposition the window!
+
+        // next, if we are actually fgnd, we'll also try and set topmost (which OS might or might not always allow)
+        if self.target == fgnd {
+            let _ = SetWindowPos (host, Some(HWND_TOPMOST),  0, 0, 0, 0,  SWP_NOMOVE | SWP_NOSIZE);
+            self.is_top.set();
+            wd.ov_topmost.store(target);
+        }
 
     } }
 
     pub fn resync_ov_z_order (&self) { unsafe {
-        let (host, target) = (self.host.into(), self.target.into());
         self.is_top.clear();
-        let _ = SetWindowPos (host, Some(target), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
-        let _ = ShowWindow (host, SW_SHOWNOACTIVATE);
-        let _ = SetWindowPos (target, Some(host), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
+        let hwnd_insert = GetWindow (self.target.into(), GW_HWNDPREV) .unwrap_or(HWND_TOP);
+        let _ = SetWindowPos (self.host.into(), Some(hwnd_insert),  0, 0, 0, 0,  SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE);
     } }
 
 }
@@ -179,22 +195,24 @@ impl WinDusky {
         static INSTANCE : OnceLock <WinDusky> = OnceLock::new();
         INSTANCE .get_or_init ( ||
             WinDusky {
-                inited    : Flag::new(false),
-                overlays  : RwLock::new(HashMap::default()),
-                cur_timer : AtomicUsize::default(),
-                ov_top    : HwndAtomic::default(),
+                rules      : RulesMonitor::instance(),
+                thread_id  : AtomicU32::default(),
+                overlays   : RwLock::new (HashMap::default()),
+                cur_timer  : AtomicUsize::default(),
+                ov_topmost : HwndAtomic::default(),
             }
         )
-        // ^^ NOTE that init is not called here, and the user should to it at their convenience !!
+        // ^^ NOTE that init is not called here, and the user should do so at their own convenience !!
     }
 
 
-    pub fn start_monitor (&self) -> Result<(), String> { unsafe {
+    pub fn start_overlay_manager (&self) -> Result<(), String> { unsafe {
 
-        if self.inited.is_set() {
+        if self.thread_id.load(Ordering::Acquire) != 0 {
+            // if we already have a thread-id, we must have already initied
             return Ok(())
         };
-        self.inited.set();
+        self.thread_id.store (GetCurrentThreadId(), Ordering::Release);
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -274,7 +292,7 @@ impl WinDusky {
                 let _ = MagUninitialize();
                 return Err(format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
-            else if msg.message == WM_TIMER {
+            else if msg.message == WM_TIMER || msg.message == WM_APP__REQ_UPDATE {
                 let overlays = self.overlays.read().unwrap();
                 for overlay in overlays.values() {
                     if overlay.marked.is_set() {
@@ -291,12 +309,8 @@ impl WinDusky {
                 if let Some(overlay) = overlays.get(&target) {
                     match msg.wParam.0 {
                         HOTKEY_ID__TOGGLE => {
-                            if let Some(overlay) = overlays.remove (&target) {
-                                // ^^ the returned value is dropped and so its hwnds will get cleaned up
-                                if overlay.target == self.ov_top.load() { self.ov_top.clear(); }
-                            }
-                            if overlays.is_empty() { self.disable_timer() }
-                            tray::update_tray__overlay_count (overlays.len());
+                            self.remove_overlay (target, &mut overlays);
+                            self.rules.register_user_unapplied (target);
                         },
                         HOTKEY_ID__NEXT_EFFECT => {
                             apply_color_effect (overlay.mag, overlay.effect.cycle_next());
@@ -308,13 +322,16 @@ impl WinDusky {
                     }
                 }
                 else if msg.wParam.0 == HOTKEY_ID__TOGGLE {
-                    if let Ok(overlay) = Overlay::new (target.into()) {
-                        if overlays.is_empty() { self.ensure_timer_running() }
-                        overlays.insert (target, overlay);
-                        tray::update_tray__overlay_count (overlays.len());
-                    }
+                    self.create_overlay (target, ColorEffect::default(), &mut overlays);
                 }
                 //dbg!(overlays);
+            }
+            else if msg.message == WM_APP__REQ_CREATE_OVERLAY {
+                let target = Hwnd (msg.wParam.0 as _);
+                let mut overlays = self.overlays.write().unwrap();
+                if !overlays.contains_key (&target) {
+                    self.create_overlay ( target, ColorEffect (msg.lParam.0 as _),  &mut overlays );
+                }
             }
             else {
                 //let _ = TranslateMessage(&msg);
@@ -325,6 +342,51 @@ impl WinDusky {
 
     } }
 
+    fn remove_overlay (&self, target: Hwnd, overlays: &mut HashMap <Hwnd, Overlay>) {
+        if let Some(overlay) = overlays.remove (&target) {
+            // ^^ the returned value is dropped and so its hwnds will get cleaned up
+            if overlay.target == self.ov_topmost.load() { self.ov_topmost.clear(); }
+        }
+        if overlays.is_empty() { self.disable_timer() }
+        tray::update_tray__overlay_count (overlays.len());
+    }
+
+    fn create_overlay (&self, target:Hwnd, effect:ColorEffect, overlays: &mut HashMap <Hwnd, Overlay>) {
+        if let Ok(overlay) = Overlay::new (target, effect) {
+            if overlays.is_empty() { self.ensure_timer_running() }
+            overlays.insert (target, overlay);
+            tray::update_tray__overlay_count (overlays.len());
+        }
+    }
+
+    fn post_req__overlay_creation (&self, target:Hwnd, effect:ColorEffect) { unsafe {
+        let thread_id = self.thread_id.load(Ordering::Relaxed);
+        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_CREATE_OVERLAY, WPARAM (target.0 as _), LPARAM (effect.0 as _));
+    } }
+    fn post_req__update (&self) { unsafe {
+        let thread_id = self.thread_id.load(Ordering::Relaxed);
+        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_UPDATE, WPARAM(0), LPARAM(0));
+    } }
+
+    pub(crate) fn clear_overlays (&self) { unsafe {
+        let mut overlays = self.overlays.write().unwrap();
+        let hwnds : Vec<_> = overlays.keys().copied().collect();
+        for hwnd in hwnds {
+            if let Some(overlay) = overlays.remove(&hwnd) {
+                let _ = PostMessageW (Some(overlay.host.into()), WM_CLOSE, Default::default(), Default::default());
+                let _ = InvalidateRect (Some(hwnd.into()), None, true);
+                self.rules.register_user_unapplied (hwnd);
+            }
+        }
+        self.ov_topmost.clear();
+        self.disable_timer();
+        tray::update_tray__overlay_count(0);
+    } }
+
+    pub(crate) fn overlays_count (&self) -> usize {
+        let overlays = self.overlays.read().unwrap();
+        overlays.len()
+    }
 
     pub fn ensure_timer_running (&self) { unsafe {
         let timer_id = SetTimer (None, 0, TIMER_TICK_MS, None);
@@ -336,26 +398,6 @@ impl WinDusky {
     } }
 
 
-    pub(crate) fn clear_overlays (&self) { unsafe {
-        let mut overlays = self.overlays.write().unwrap();
-        let hwnds : Vec<_> = overlays.keys().copied().collect();
-        for hwnd in hwnds {
-            if let Some(overlay) = overlays.remove(&hwnd) {
-                let _ = PostMessageW (Some(overlay.host.into()), WM_CLOSE, Default::default(), Default::default());
-                let _ = InvalidateRect (Some(hwnd.into()), None, true);
-            }
-        }
-        self.ov_top.clear();
-        self.disable_timer();
-        tray::update_tray__overlay_count(0);
-    } }
-
-
-    pub(crate) fn overlays_count (&self) -> usize {
-        let overlays = self.overlays.read().unwrap();
-        overlays.len()
-    }
-
 }
 
 
@@ -365,7 +407,8 @@ impl WinDusky {
 fn apply_color_effect (mag: impl Into<HWND>, effect: MAGCOLOREFFECT) { unsafe {
     if MagSetColorEffect (mag.into(), &effect as *const _ as _) == false {
         eprintln! ("Setting Color Effect failed with error: {:?}", GetLastError());
-        let _ = MagUninitialize();
+        //let _ = MagUninitialize();
+        //todo .. gotta get around to proper err handling at some point .. incl un-init before exits etc
     }
 } }
 
@@ -414,118 +457,63 @@ unsafe extern "system" fn win_event_proc (
 
     if let Some(overlay) = overlays .get (&hwnd.into()) {
         //println!("got event {:#06x} for hwnd {:?}, id-object {:#06x}, id-child {:#06x}", event, hwnd, id_object, _id_child);
-        if event == EVENT_OBJECT_DESTROY ||
-            event == EVENT_OBJECT_HIDE ||
-            event == EVENT_OBJECT_CLOAKED
-        {
-            if let Some(overlay) = overlays .remove (&hwnd.into()) {
-                if overlay.target == wd.ov_top.load() { wd.ov_top.clear(); }
-            }
-            if overlays.is_empty() { wd.disable_timer() }
-            tray::update_tray__overlay_count (overlays.len());
-        }
-        else {
+        if event == EVENT_OBJECT_DESTROY || event == EVENT_OBJECT_HIDE || event == EVENT_OBJECT_CLOAKED {
+            wd.remove_overlay (hwnd.into(), &mut overlays);
+        } else {
+            // we simply mark the overlay here for an update on its next refresh
             overlay.marked.set();
+            // and to kick an immdt update we'll post a message too (insead of waiting for timer)
+            wd.post_req__update();
         }
     }
     else if event == EVENT_SYSTEM_FOREGROUND {
-        // i.e non overlaid window came to fgnd
-        if let Some(overlay) = overlays .get (&wd.ov_top.load()) {
-            wd.ov_top.clear();
+        // i.e non overlaid window came to fgnd .. so we'll clear any on-top overlays
+        if let Some(overlay) = overlays .get (&wd.ov_topmost.load()) {
+            wd.ov_topmost.clear();
             overlay.resync_ov_z_order();
         }
+
+        // then we'll check if auto-rules mean we should create overlay for this hwnd itself
+        let hwnd:Hwnd = hwnd.into();
+
+        thread::spawn ( move ||  {
+
+            // first lets see if we've already evaluated this and should move on
+            let result = wd.rules.check_rule_cached (hwnd);
+
+            if let Some ( RulesValue { enabled: false, .. } ) = result {
+                return;
+            }
+            else if let Some ( RulesValue { enabled: true, effect} ) = result {
+                wd.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+                return
+            }
+
+            // so looks like this is first ever fgnd for this, so we'd like to eval from scratch ..
+            // however, as seen before, it takes time for explorer windows to get all their properties after their new hwnds report fgnd
+            // .. so we'll have to sit on delays and check it periodically (just like done in switche/krusty etc)
+
+            //thread::sleep (Duration::from_millis(100));
+
+            if let RulesValue { enabled: true, effect } = wd.rules.re_check_rule(hwnd) {
+                wd.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+            }
+            thread::sleep (Duration::from_millis(300));
+
+            if wd.overlays.read().unwrap().contains_key(&hwnd) { return }
+            if let RulesValue { enabled: true, effect } = wd.rules.re_check_rule(hwnd) {
+                wd.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+            }
+            thread::sleep (Duration::from_millis(500));
+
+            if wd.overlays.read().unwrap().contains_key(&hwnd) { return }
+            if let RulesValue { enabled: true, effect } = wd.rules.re_check_rule(hwnd) {
+                wd.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+            }
+        } );
     }
+
 }
 
 
-
-
-
-// we'll define our own new-type of Hwnd mostly coz HWND doesnt implement Debug, Hash etc
-# [ derive (Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash) ]
-pub struct Hwnd (isize);
-
-impl Hwnd {
-    pub fn is_valid (&self) -> bool { self.0 != 0 }
-}
-
-impl From <HWND> for Hwnd {
-    fn from (hwnd:HWND) -> Self { Hwnd(hwnd.0 as _) }
-}
-impl From <Hwnd> for HWND {
-    fn from (hwnd:Hwnd) -> Self { HWND(hwnd.0 as _) }
-}
-impl From <Hwnd> for isize {
-    fn from (hwnd:Hwnd) -> Self { hwnd.0 }
-}
-impl From <isize> for Hwnd {
-    fn from (hwnd: isize) -> Self { Hwnd(hwnd) }
-}
-
-
-
-
-// and the atomic version of Hwnd for storage
-# [ derive (Debug, Default) ]
-pub struct HwndAtomic (AtomicIsize);
-
-impl HwndAtomic {
-    pub fn load (&self) -> Hwnd {
-        self.0.load (Ordering::Acquire) .into()
-    }
-    pub fn store (&self, hwnd: impl Into<Hwnd>) {
-        self.0 .store (hwnd.into().0, Ordering::Release)
-    }
-    pub fn clear (&self) {
-        self.store (Hwnd(0))
-    }
-    pub fn contains (&self, hwnd: impl Into<Hwnd>) -> bool {
-        self.load() == hwnd.into()
-    }
-    pub fn is_valid (&self) -> bool {
-        self.load() != Hwnd(0)
-    }
-}
-impl From <HwndAtomic> for Hwnd {
-    fn from (h_at: HwndAtomic) -> Hwnd { h_at.load() }
-}
-impl From <HwndAtomic> for HWND {
-    fn from (h_at: HwndAtomic) -> HWND { h_at.load().into() }
-}
-
-
-
-
-/// representation for all our atomic flags for states mod-states, modifier-keys, mouse-btn-state etc <br>
-/// (Note that this uses Acquire/Release memory ordering semantics, and shouldnt be used as lock/mutex etc)
-# [ derive (Debug, Default) ]
-pub struct Flag (AtomicBool);
-// ^^ simple sugar that helps reduce clutter in code
-
-impl Flag {
-    /* Note regarding Atomic Memory Ordering usage here ..
-       - The Flag struct is intended for use as simple flags, not as synchronization primitives (i.e locks)
-       - On x86, there is strong memory model and Acq/Rel is free .. so no benefit to using Relaxed
-       - SeqCst however requires a memory fence that could be potentially be costly (flush writes before atomic op etc)
-       - For the very rare cases that would require total global ordering with SeqCst, we should just use lib facilities instead!!
-    */
-    pub fn new (state:bool) -> Flag { Flag (AtomicBool::new(state)) }
-
-    /// toggling returns prior state .. better to use this than to check and set
-    pub fn toggle (&self) -> bool { self.0 .fetch_xor (true, Ordering::AcqRel) }
-
-    /// swap stores new state and returns prior state .. better to use this than to update and check/load separately
-    pub fn swap   (&self, state:bool) -> bool { self.0 .swap (state, Ordering::AcqRel) }
-
-    pub fn set   (&self) { self.0 .store (true,  Ordering::Release) }
-    pub fn clear (&self) { self.0 .store (false, Ordering::Release) }
-
-    pub fn store  (&self, state:bool) { self.0.store (state, Ordering::Release) }
-
-    pub fn is_set   (&self) -> bool {  self.0 .load (Ordering::Acquire) }
-    pub fn is_clear (&self) -> bool { !self.0 .load (Ordering::Acquire) }
-}
-impl From<Flag> for bool {
-    fn from (flag: Flag) -> bool { flag.is_set() }
-}
 

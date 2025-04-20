@@ -245,23 +245,33 @@ pub const COLOR_EFFECTS : [MAGCOLOREFFECT; 22] = [
 ];
 
 
-#[derive (Debug)]
-pub struct ColorEffect (AtomicUsize);
+// todo .. we gotta make these so we can externally refer to them as enums, rather than having to specify their index !!
+
+#[derive (Debug, Copy, Clone)]
+pub struct ColorEffect (pub usize);
 
 impl Default for ColorEffect {
-    fn default() -> ColorEffect {
-        ColorEffect::new(4)
-    }
+    fn default() -> ColorEffect { ColorEffect(4) }
+}
+impl ColorEffect {
+    pub fn new (idx:usize) -> ColorEffect { ColorEffect(idx) }
 }
 
-impl ColorEffect {
 
-    pub fn new (idx:usize) -> ColorEffect {
-        ColorEffect (AtomicUsize::new(idx))
+#[derive (Debug, Default)]
+pub struct ColorEffectAtomic (AtomicUsize);
+
+
+impl ColorEffectAtomic {
+
+    pub fn new (effect : ColorEffect) -> ColorEffectAtomic {
+        ColorEffectAtomic (AtomicUsize::new (effect.0))
     }
+
     pub fn get (&self) -> MAGCOLOREFFECT {
         COLOR_EFFECTS [self.0.load(Ordering::Relaxed)]
     }
+
     pub fn cycle_next (&self) -> MAGCOLOREFFECT {
         let cur = self.0.load(Ordering::Acquire);
         let idx = (cur + 1) % COLOR_EFFECTS.len();

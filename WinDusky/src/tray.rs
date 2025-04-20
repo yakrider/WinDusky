@@ -62,10 +62,11 @@ pub fn start_system_tray_monitor() {
 
     let active = CheckMenuItem::new ("Overlays : 0", true, false, None);
 
+    let reset = MenuItem::new ("Clear Rule Overrides", true, None);
     let quit = MenuItem::new ("Quit", true, None);
 
     let tray_menu = Menu::new();
-    tray_menu .append_items ( &[ &elevated, &active, &quit ] );
+    tray_menu .append_items ( &[ &elevated, &active, &reset, &quit ] );
 
     let tray_icon = TrayIconBuilder::new()
         .with_menu (Box::new(tray_menu))
@@ -108,6 +109,10 @@ pub fn start_system_tray_monitor() {
             DuskyTauriEvent::MenuEvent(event) => {
                 if event.id == quit.id() {
                     std::process::exit(0);
+                }
+                else if event.id == reset.id() {
+                    let wd = WinDusky::instance();
+                    wd.rules.clear_rule_overrides();
                 }
                 else if event.id == active.id() {
                     let wd = WinDusky::instance();

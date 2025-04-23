@@ -10,7 +10,7 @@ use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::windows::EventLoopBuilderExtWindows;
 
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 use windows::Win32::Foundation::HANDLE;
@@ -53,20 +53,57 @@ pub fn update_tray__overlay_count (n_active: usize) {
 }
 
 
+const MENU_ELEVATED         : &str = "is_elevated";
+const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
+const MENU_CLEAR_OVERRIDES  : &str = "clear_rules_overrides";
+const MENU_EDIT_CONF        : &str = "edit_conf";
+const MENU_RESET_CONF       : &str = "reset_conf";
+const MENU_QUIT             : &str = "quit";
+
+fn menu_disp_str (id:&str) -> &str {
+    match id {
+        MENU_ACTIVE_OVERLAYS  => "Overlays : 0",
+        MENU_CLEAR_OVERRIDES  => "Clear Rules Overrides",
+        MENU_EDIT_CONF        => "Edit Config",
+        MENU_RESET_CONF       => "Reset Config",
+        MENU_QUIT             => "Quit",
+        _ => "",
+    }
+}
+fn exec_menu_action (id: &str, wd: &WinDusky) {
+    match id {
+        MENU_ACTIVE_OVERLAYS  => { wd.clear_overlays() }
+        MENU_CLEAR_OVERRIDES  => { wd.rules.clear_rule_overrides() }
+        MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit() }
+        MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset() }
+        MENU_QUIT             => { std::process::exit(0) }
+        _ => { }
+    }
+}
+
 
 pub fn start_system_tray_monitor() {
 
+    let make_menu_item  = |id, enabled| MenuItem::with_id (id, menu_disp_str(id), enabled, None);
+    let make_menu_check = |id, enabled, checked| CheckMenuItem::with_id (id, menu_disp_str(id), enabled, checked, None);
+
     let is_elev = check_cur_proc_elevated().unwrap_or_default();
-    let elev_txt = if is_elev { "Elevated : YES" } else { "Elevated : NO" };
-    let elevated = CheckMenuItem::new (elev_txt, false, is_elev, None);
+    let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
+    let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, true, None);
 
-    let active = CheckMenuItem::new ("Overlays : 0", true, false, None);
+    let active = make_menu_check (MENU_ACTIVE_OVERLAYS, true, false);
+    let rules_clear = make_menu_item (MENU_CLEAR_OVERRIDES, true);
 
-    let reset = MenuItem::new ("Clear Rule Overrides", true, None);
-    let quit = MenuItem::new ("Quit", true, None);
+    let edit_conf  = make_menu_item (MENU_EDIT_CONF, true);
+    let reset_conf = make_menu_item (MENU_RESET_CONF, true);
+
+    let quit = make_menu_item (MENU_QUIT, true);
+
+    let sep = PredefinedMenuItem::separator();
 
     let tray_menu = Menu::new();
-    tray_menu .append_items ( &[ &elevated, &active, &reset, &quit ] );
+    tray_menu .append_items ( &[ &elevated, &sep, &active, &rules_clear, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
+
 
     let tray_icon = TrayIconBuilder::new()
         .with_menu (Box::new(tray_menu))
@@ -101,26 +138,13 @@ pub fn start_system_tray_monitor() {
 
 
     let events_handler = move |event: DuskyTauriEvent| {
-        //println!("dusky-tauri-event: {event:?}");
+        tracing::debug!("dusky-tauri-event: {event:?}");
         match event {
             DuskyTauriEvent::OverlayEvent { n_active } => {
                 update_active_counts (n_active, &active);
             }
-            DuskyTauriEvent::MenuEvent(event) => {
-                if event.id == quit.id() {
-                    std::process::exit(0);
-                }
-                else if event.id == reset.id() {
-                    let wd = WinDusky::instance();
-                    wd.rules.clear_rule_overrides();
-                }
-                else if event.id == active.id() {
-                    let wd = WinDusky::instance();
-                    if wd.overlays_count() > 0 {
-                        wd.clear_overlays();
-                    }
-                    update_active_counts (0, &active);
-                }
+            DuskyTauriEvent::MenuEvent (event) => {
+                exec_menu_action (&event.id.0, WinDusky::instance());
             }
         }
     };

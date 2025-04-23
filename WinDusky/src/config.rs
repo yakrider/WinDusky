@@ -6,8 +6,8 @@ use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 use std::{fs, io};
 
-use tracing::{warn, Level};
 use tracing::metadata::LevelFilter;
+use tracing::{info, warn, Level};
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -18,7 +18,7 @@ use tracing_subscriber::{reload, Layer, Registry};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::keys::VKey;
 
@@ -58,6 +58,14 @@ pub struct AutoOverlayClass {
     pub effect : Option<String>,
     pub exe_exclusions : Vec<String>,
 }
+
+
+#[derive (Debug)]
+pub struct ColorEffectSpec {
+    pub name : String,
+    pub transform : [f32; 25],
+}
+
 
 
 // first some module level helper functions ..
@@ -241,21 +249,21 @@ impl Config {
             .unwrap_or (self.default.get(flag_name).unwrap().as_bool().unwrap())
     }
 
-    #[allow (dead_code)] fn get_number (&self, key:&str) -> u32 {
+    fn _get_float (&self, key:&str) -> f32 {
         self.toml.read().unwrap().as_ref()
             .and_then (|t| t.get(key))
-            .and_then (|t| t.as_integer().map(|n| n as u32))
-            .unwrap_or ( self.default.get(key) .and_then (|t| t.as_integer().map(|n| n as u32)) .unwrap_or_default() )
+            .and_then (|t| t.as_float().map(|n| n as f32))
+            .unwrap_or ( self.default.get(key) .and_then (|t| t.as_float().map(|n| n as f32)) .unwrap_or_default() )
     }
 
-    #[allow (dead_code)] fn get_string (&self, key:&str) -> String {
+    fn get_string (&self, key:&str) -> String {
         self.toml.read().unwrap().as_ref()
             .and_then (|t| t.get(key))
             .and_then (|t| t.as_str()) .map (|s| s.to_string())
             .unwrap_or ( self.default.get(key) .and_then (|t| t.as_str()) .map (|s| s.to_string()) .unwrap_or_default() )
     }
 
-    #[allow (dead_code)] fn get_string_array (&self, key:&str) -> Vec<String> {
+    fn get_string_array (&self, key:&str) -> Vec<String> {
         self.toml.read().unwrap() .as_ref()
             .and_then (|t| t.get(key))
             .and_then (|t| t.as_array())
@@ -267,78 +275,25 @@ impl Config {
             )
     }
 
-    fn get_hotkey (&self, conf_key:&str) -> Option<HotKey> {
-        if let Some(toml) = self.toml.read().unwrap() .as_ref() {
-            if let Some(key) = {
-                toml .get(conf_key) .and_then (|t| t.get("key")) .and_then (|k| k.as_str()) .and_then (|s| VKey::from_str(s).ok())
-            } {
-                let modifiers = toml .get(conf_key) .and_then (|t| t.get("modifiers"))
-                    .and_then (|ms| ms.as_array())
-                    .map (|t| t.iter() .filter_map (|m| m.as_str() .and_then (|s| VKey::from_str(s).ok())) .collect())
-                    .unwrap_or_default();
-                return Some ( HotKey {key, modifiers} )
-            }
+
+    pub fn check_dusky_conf_version_match (&self) -> bool {
+        let conf_version = self.toml.read().unwrap().as_ref().unwrap() .get("dusky_conf_version")
+            .and_then (|t| t.as_float().map(|n| n as f32)) .unwrap_or_default();
+        info! ("Using user conf WinDusky.conf.toml with version string : {:?}", conf_version);
+
+        let default_conf_version = self.default.get("dusky_conf_version")
+            .and_then (|t| t.as_float().map(|n| n as f32)) .unwrap_or_default();
+
+        if conf_version != default_conf_version {
+            warn! (" !!! WARNING !!! CONF VERSION MISMATCH : Expected {:?} .. Found {:?}", default_conf_version, conf_version);
+            return false
         }
-        None
+        true
     }
 
-
-    pub fn get_dusky_toggle_hotkey       (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_toggle_hotkey") }
-    pub fn get_dusky_next_effect_hotkey  (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_next_effect_hotkey") }
-    pub fn get_dusky_prev_effect_hotkey  (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_prev_effect_hotkey") }
-
-
-
-    fn parse_auto_overlay_exe (v : &toml_edit::Value) -> Option <AutoOverlayExe> {
-        if let Some(entry) = v .as_inline_table() {
-            if let Some(exe) = entry .get("exe") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
-                let effect = entry .get("effect") .and_then (|s| s.as_str() .map (|s| s.to_string())) .filter (|eff| eff != "default");
-                let result = AutoOverlayExe {exe, effect};
-                tracing::debug! ("parsed auto-overlay-exe entry: {:?}", &result);
-                return Some ( result )
-            }
-        }
-        None
+    pub fn check_flag__logging_enabled (&self) -> bool {
+        self.check_flag ( "logging_enabled" )
     }
-    pub fn get_auto_overlay_exes (&self) -> Vec<AutoOverlayExe> {
-        if let Some(toml) = self.toml.read().unwrap().as_ref() {
-            return toml .get ("auto_overlay_exes") .and_then (|t| t.as_array())
-                .map (|t| t.iter() .filter_map (Self::parse_auto_overlay_exe) .collect())
-                .unwrap_or_default()
-        }
-        vec![]
-    }
-
-
-    fn parse_auto_overlay_window_class (v : &toml_edit::Value) -> Option <AutoOverlayClass> {
-        if let Some(entry) = v .as_inline_table() {
-            if let Some(class) = entry .get("class_name") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
-                let effect = entry .get("effect")
-                    .and_then (|s| s.as_str() .map (|s| s.to_string()))
-                    .filter (|eff| eff != "default");
-                let exe_exclusions = entry .get("exe_exclusions")
-                    .and_then (|s| s.as_array())
-                    .map (|a| a.iter() .filter_map (|s| s.as_str().map(|s| s.to_string())) .collect::<Vec<_>>())
-                    .unwrap_or_default();
-                let result = AutoOverlayClass { class, effect, exe_exclusions };
-                tracing::debug! ("parsed auto-overlay-class entry: {:?}", &result);
-                return Some (result)
-            }
-        }
-        None
-    }
-    pub fn get_auto_overlay_window_classes (&self) -> Vec<AutoOverlayClass> {
-        if let Some(toml) = self.toml.read().unwrap().as_ref() {
-            return toml .get ("auto_overlay_window_classes") .and_then (|t| t.as_array())
-                .map (|t| t.iter() .filter_map (Self::parse_auto_overlay_window_class) .collect())
-                .unwrap_or_default()
-        }
-        vec![]
-    }
-
-
-    // all the config flags we can check
-    pub fn check_flag__logging_enabled  (&self) -> bool { self.check_flag ( "logging_enabled" ) }
 
     pub fn get_log_level (&self) -> LevelFilter {
         if !self.check_flag__logging_enabled() {
@@ -357,6 +312,109 @@ impl Config {
 
 
 
+    fn get_hotkey (&self, conf_key:&str) -> Option<HotKey> {
+        if let Some(toml) = self.toml.read().unwrap() .as_ref() {
+            if let Some(key) = {
+                toml .get(conf_key) .and_then (|t| t.get("key")) .and_then (|k| k.as_str()) .and_then (|s| VKey::from_str(s).ok())
+            } {
+                let modifiers = toml .get(conf_key) .and_then (|t| t.get("modifiers"))
+                    .and_then (|ms| ms.as_array())
+                    .map (|t| t.iter() .filter_map (|m| m.as_str() .and_then (|s| VKey::from_str(s).ok())) .collect())
+                    .unwrap_or_default();
+                return Some ( HotKey {key, modifiers} )
+            }
+        }
+        None
+    }
+
+    pub fn get_dusky_toggle_hotkey       (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_toggle_hotkey") }
+    pub fn get_dusky_next_effect_hotkey  (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_next_effect_hotkey") }
+    pub fn get_dusky_prev_effect_hotkey  (&self)  -> Option<HotKey> { self.get_hotkey ("dusky_prev_effect_hotkey") }
+
+
+
+
+    fn parse_auto_overlay_exe (v : &Value) -> Option <AutoOverlayExe> {
+        if let Some(entry) = v .as_inline_table() {
+            if let Some(exe) = entry .get("exe") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
+                let effect = entry .get("effect") .and_then (|s| s.as_str() .map (|s| s.to_string())) .filter (|eff| eff != "default");
+                let result = AutoOverlayExe {exe, effect};
+                //tracing::debug! ("parsed auto-overlay-exe entry: {:?}", &result);
+                return Some ( result )
+            }
+        }
+        None
+    }
+    pub fn get_auto_overlay_exes (&self) -> Vec<AutoOverlayExe> {
+        if let Some(toml) = self.toml.read().unwrap().as_ref() {
+            return toml .get ("auto_overlay_exes") .and_then (|t| t.as_array())
+                .map (|t| t.iter() .filter_map (Self::parse_auto_overlay_exe) .collect())
+                .unwrap_or_default()
+        }
+        vec![]
+    }
+
+
+    fn parse_auto_overlay_window_class (v : &Value) -> Option <AutoOverlayClass> {
+        if let Some(entry) = v .as_inline_table() {
+            if let Some(class) = entry .get("class_name") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
+                let effect = entry .get("effect")
+                    .and_then (|s| s.as_str() .map (|s| s.to_string()))
+                    .filter (|eff| eff != "default");
+                let exe_exclusions = entry .get("exe_exclusions")
+                    .and_then (|s| s.as_array())
+                    .map (|a| a.iter() .filter_map (|s| s.as_str().map(|s| s.to_string())) .collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let result = AutoOverlayClass { class, effect, exe_exclusions };
+                //tracing::debug! ("parsed auto-overlay-class entry: {:?}", &result);
+                return Some (result)
+            }
+        }
+        None
+    }
+    pub fn get_auto_overlay_window_classes (&self) -> Vec<AutoOverlayClass> {
+        if let Some(toml) = self.toml.read().unwrap().as_ref() {
+            return toml .get ("auto_overlay_window_classes") .and_then (|t| t.as_array())
+                .map (|t| t.iter() .filter_map (Self::parse_auto_overlay_window_class) .collect())
+                .unwrap_or_default()
+        }
+        vec![]
+    }
+
+
+
+    pub fn parse_color_effect (table : &Table) -> Option <ColorEffectSpec> {
+        if let Some (name) = table .get("effect") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
+            if let Some (Item::Value (Value::Array(arr))) = table .get("transform") {
+                let matrix: Vec<f32> = arr.iter() .filter_map (|v|
+                    v.as_float() .or_else (|| v.as_integer() .map (|i| i as f64)) .map (|f| f as f32)
+                ) .collect();
+                if matrix.len() == 25 {
+                    let mut transform = [0.0f32; 25];
+                    transform.copy_from_slice (&matrix);
+                    return Some ( ColorEffectSpec { name, transform } )
+                }
+            }
+        }
+        None
+    }
+    pub fn get_color_effects (&self) -> Vec<ColorEffectSpec> {
+        if let Some(toml) = self.toml.read().unwrap().as_ref() {
+            return toml .get ("effects") .and_then (|t| t.as_array_of_tables())
+                .map (|t| t.iter() .filter_map (Self::parse_color_effect) .collect())
+                .unwrap_or_default()
+        }
+        vec![]
+    }
+
+
+    pub fn get_effects_cycle_order (&self) -> Vec<String> {
+        self.get_string_array ("effects_cycle_order")
+    }
+
+    pub fn get_effects_default (&self) -> String {
+        self.get_string ("effects_default")
+    }
 
 
 

@@ -1,5 +1,5 @@
 
-#![allow(unused)]
+#![allow (unused, non_snake_case, non_upper_case_globals)]
 
 use std::io::Cursor;
 use std::sync::{LazyLock, Mutex};
@@ -34,28 +34,32 @@ fn get_dusky_icon() -> Icon {
 // Then we can send custom events for the menu to act on!
 
 #[derive(Debug)]
-pub enum DuskyTauriEvent {
-    OverlayEvent { n_active : usize },
-    MenuEvent (MenuEvent),
+pub enum DuskyEvent {
+    MenuAction (MenuEvent),
+    OverlayUpdate { n_active : usize },
+    OverridesUpdate { n_overrides : usize },
 }
 
 
-#[ allow (non_upper_case_globals) ]
-static tray_events_proxy : LazyLock <Mutex <Option <EventLoopProxy <DuskyTauriEvent>>>> = LazyLock::new (|| Mutex::new (None));
+static tray_events_proxy : LazyLock <Mutex <Option <EventLoopProxy <DuskyEvent>>>> = LazyLock::new (|| Mutex::new (None));
 
 
-#[ allow (non_snake_case) ]
-/// this will inject an internal event into sys-tray event-loop which will update tray-menu checkboxes
+/// these will inject an internal event into sys-tray event-loop which will update tray-menu checkboxes etc
 pub fn update_tray__overlay_count (n_active: usize) {
     if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
-        let _ = proxy.send_event ( DuskyTauriEvent::OverlayEvent { n_active } );
+        let _ = proxy.send_event ( DuskyEvent::OverlayUpdate { n_active } );
+    }
+}
+pub fn update_tray__overrides_count (n_overrides: usize) {
+    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+        let _ = proxy.send_event ( DuskyEvent::OverridesUpdate { n_overrides } );
     }
 }
 
 
 const MENU_ELEVATED         : &str = "is_elevated";
 const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
-const MENU_CLEAR_OVERRIDES  : &str = "clear_rules_overrides";
+const MENU_USER_OVERRIDES   : &str = "user_overrides";
 const MENU_EDIT_CONF        : &str = "edit_conf";
 const MENU_RESET_CONF       : &str = "reset_conf";
 const MENU_QUIT             : &str = "quit";
@@ -63,7 +67,7 @@ const MENU_QUIT             : &str = "quit";
 fn menu_disp_str (id:&str) -> &str {
     match id {
         MENU_ACTIVE_OVERLAYS  => "Overlays : 0",
-        MENU_CLEAR_OVERRIDES  => "Clear Rules Overrides",
+        MENU_USER_OVERRIDES   => "User Overrides : 0",
         MENU_EDIT_CONF        => "Edit Config",
         MENU_RESET_CONF       => "Reset Config",
         MENU_QUIT             => "Quit",
@@ -73,7 +77,7 @@ fn menu_disp_str (id:&str) -> &str {
 fn exec_menu_action (id: &str, wd: &WinDusky) {
     match id {
         MENU_ACTIVE_OVERLAYS  => { wd.clear_overlays() }
-        MENU_CLEAR_OVERRIDES  => { wd.rules.clear_rule_overrides() }
+        MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides() }
         MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit() }
         MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset() }
         MENU_QUIT             => { std::process::exit(0) }
@@ -91,8 +95,8 @@ pub fn start_system_tray_monitor() {
     let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
     let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, true, None);
 
-    let active = make_menu_check (MENU_ACTIVE_OVERLAYS, true, false);
-    let rules_clear = make_menu_item (MENU_CLEAR_OVERRIDES, true);
+    let active    = make_menu_check (MENU_ACTIVE_OVERLAYS, true, false);
+    let overrides = make_menu_check (MENU_USER_OVERRIDES, true, false);
 
     let edit_conf  = make_menu_item (MENU_EDIT_CONF, true);
     let reset_conf = make_menu_item (MENU_RESET_CONF, true);
@@ -102,7 +106,7 @@ pub fn start_system_tray_monitor() {
     let sep = PredefinedMenuItem::separator();
 
     let tray_menu = Menu::new();
-    tray_menu .append_items ( &[ &elevated, &sep, &active, &rules_clear, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
+    tray_menu .append_items ( &[ &elevated, &sep, &active, &overrides, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
 
 
     let tray_icon = TrayIconBuilder::new()
@@ -113,8 +117,8 @@ pub fn start_system_tray_monitor() {
 
 
     // we can now setup the event-loop to monitor events from the tray and tray-menu
-    //let event_loop : EventLoop<DuskyTauriEvent> = EventLoopBuilder::with_user_event().build();
-    let event_loop : EventLoop<DuskyTauriEvent> = EventLoopBuilder::with_user_event().with_any_thread(true).build();
+    //let event_loop : EventLoop<DuskyEvent> = EventLoopBuilder::with_user_event().build();
+    let event_loop : EventLoop<DuskyEvent> = EventLoopBuilder::with_user_event().with_any_thread(true).build();
 
     let event_loop_proxy = event_loop.create_proxy();
 
@@ -122,28 +126,30 @@ pub fn start_system_tray_monitor() {
 
     let proxy = event_loop_proxy.clone();
     MenuEvent::set_event_handler ( Some ( move |event:MenuEvent| {
-        let _ = proxy.send_event (DuskyTauriEvent::MenuEvent(event));
+        let _ = proxy.send_event (DuskyEvent::MenuAction(event));
     } ) );
 
 
     fn update_active_counts (n_active: usize, active: &CheckMenuItem) {
-        if n_active > 0 {
-            active.set_checked (true);
-            active.set_text (format!("Overlays: {:?}", n_active));
-        } else {
-            active.set_checked (false);
-            active.set_text ("Overlays: 0");
-        }
+        active.set_text (format!("Active Overlays: {:?}", n_active));
+        active.set_checked (n_active > 0);
+    };
+    fn update_overrides_counts (n_overrides: usize, overrides: &CheckMenuItem) {
+        overrides.set_text (format!("User Overrides: {:?}", n_overrides));
+        overrides.set_checked (n_overrides > 0)
     };
 
 
-    let events_handler = move |event: DuskyTauriEvent| {
-        tracing::debug!("dusky-tauri-event: {event:?}");
+    let events_handler = move |event: DuskyEvent| {
+        //tracing::debug!("{event:?}");
         match event {
-            DuskyTauriEvent::OverlayEvent { n_active } => {
+            DuskyEvent::OverlayUpdate { n_active } => {
                 update_active_counts (n_active, &active);
             }
-            DuskyTauriEvent::MenuEvent (event) => {
+            DuskyEvent::OverridesUpdate { n_overrides } => {
+                update_overrides_counts (n_overrides, &overrides);
+            }
+            DuskyEvent::MenuAction (event) => {
                 exec_menu_action (&event.id.0, WinDusky::instance());
             }
         }

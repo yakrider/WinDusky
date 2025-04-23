@@ -1,0 +1,68 @@
+
+
+## Config settings file for WinDusky appliation .. uses toml format
+# (Note that in toml format, root keys must be listed before any tables with square-brackets are started)
+#
+# The application will look for this file (WinDusky.conf.toml) in the same directory from which it is running (if the location is writeable)
+# If that location is not writeable, the config file will pick  ~/AppData/Local/WinDusky/ as conf file location
+# Upon startup, if the conf file is not present in the location selected as above, a default conf file will be created in that location
+# Configurations modified at run time will be written back to this file
+# Most changes to this file (unless specified in the config) will be picked up by the application upon reload or restart
+
+
+
+
+# Hotkey to toggle WinDusky on currectly active window, specified as a string ..
+# The default is "Alt+Win+I" .. I for 'invert' .. specified as { key = "I", modifiers = ["Alt", "Win"] }
+# Hotkey specification strings mostly map to tauri hotkey specs .. they are summarized below :
+#   Alt, Shift, Ctrl, Win, A-Z, 0-9, F1-F24, Comma, Period, Plus, Minus, etc,
+#   ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown,
+#   Space, Enter, Backspace, Delete, Insert, Tab, Escape
+#
+# Note: Updates to this config are ONLY picked up upon restarting (not just reloading) the application
+dusky_toggle_hotkey = { key = "I", modifiers = ["Alt", "Win"] }
+
+
+# Hotkeys to cycle through (next and previous) color-effects in the color-effects list
+# The defaults are Alt+Win+Period for Next, and Alt+Win+Comma for Previous effect
+dusky_next_effect_hotkey = { key = "Period", modifiers = ["Alt", "Win"] }
+dusky_prev_effect_hotkey = { key = "Comma",  modifiers = ["Alt", "Win"] }
+
+
+
+# Enable logging for debugging or reporting errors .. default is false
+# When enabled, the log files with names like "switche_log.<date>.log" will be generated in the same location as the active config file
+# Note: Enabling logging is ONLY picked up upon restarting (not just reloading) the application
+logging_enabled = true
+
+# Level of logging (if enabled) .. default is "INFO" .. options are "DEBUG", "INFO", "WARN", "ERROR"
+logging_level = "DEBUG"
+
+
+
+# List of exes for which WinDusky should automatically try to apply color effect as specified
+# If not color effect is specified, the default color effect will be applied
+# each entry must have the 'exe' field, and can optionally specify 'effect'
+# default is to have : "msinfo32.exe", "regedit.exe", "mmc.exe",
+auto_overlay_exes = [
+    { exe = "mmc.exe"      },
+    { exe = "regedit.exe"  },
+    { exe = "msinfo32.exe" },
+    { exe = "WinaeroTweaker.exe", effect = "default" },
+    { exe = "autohotkeyUX.exe",   effect = "default" },
+]
+
+
+# List of Window-classes for which WinDusky should automatically try to apply color effect as specified
+# If not color effect is specified, the default color effect will be applied
+# each entry must have the 'class_name' field, and can optionally specify 'effect', and a list of exe to exclude in 'exe_exclusions'
+# Default is to have only "#32770" which is the window class for all dialog popups that windows generates
+auto_overlay_window_classes = [
+    { class_name = "#32770", effect = "default", exe_exclusions = ["notepad++.exe"] },
+]
+
+
+
+
+# Specification of Color Effect Matrixes for the color transformations
+

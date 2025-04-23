@@ -13,12 +13,17 @@ mod dusky;
 mod effects;
 mod rules;
 mod tray;
-
-
+mod config;
+mod keys;
 
 fn main() {
 
     let wd = dusky::WinDusky::instance();
+
+    // we want the non-blocking log-appender guard to be here in main, to ensure any pending logs get flushed upon crash etc
+    let _guard = wd.conf.setup_log_subscriber();
+
+    tracing::info! ("Starting WinDusky ...");
 
     thread::spawn (|| {
         tray::start_system_tray_monitor();

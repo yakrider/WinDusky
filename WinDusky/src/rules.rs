@@ -1,19 +1,18 @@
 #![ allow (non_camel_case_types, non_snake_case, non_upper_case_globals) ]
 
-use crate::effects::ColorEffect;
-use crate::types::*;
-use std::collections::HashMap;
-use std::ffi::c_void;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
+
 use windows::core::PSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameA, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
 
-
-
-
+use crate::config::Config;
+use crate::effects::ColorEffect;
+use crate::types::*;
 
 #[derive (Debug, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub enum RulesKey {
@@ -26,20 +25,33 @@ pub enum RulesKey {
 
 
 
-#[derive (Debug, Copy, Clone)]
+#[derive (Debug, Clone)]
 pub struct RulesValue {
-    pub enabled : bool,
-    pub effect  : Option <ColorEffect>,
+    pub enabled   : bool,
+    pub effect    : Option <ColorEffect>,
+    pub excl_exes : Option<HashSet<String>>,
 }
 
-const effect_none : RulesValue = RulesValue { enabled: false, effect: None };
+
+#[derive (Debug, Copy, Clone)]
+pub struct RulesResult {
+    pub enabled   : bool,
+    pub effect    : Option <ColorEffect>,
+}
+impl From<&RulesValue> for RulesResult {
+    fn from (rv: &RulesValue) -> Self {
+        RulesResult { enabled: rv.enabled, effect: rv.effect }
+    }
+}
+
+const effect_none : RulesResult = RulesResult { enabled: false, effect: None};
 
 
 
 
 pub struct RulesMonitor {
     rules : RwLock <HashMap <RulesKey, RulesValue>>,
-    eval_cache : RwLock <HashMap <Hwnd, RulesValue>>,
+    eval_cache : RwLock <HashMap <Hwnd, RulesResult>>,
 }
 
 
@@ -47,32 +59,37 @@ impl RulesMonitor {
 
     pub fn instance () -> &'static RulesMonitor {
         static INSTANCE : OnceLock <RulesMonitor> = OnceLock::new();
-        let dm = INSTANCE .get_or_init ( ||
+        INSTANCE .get_or_init ( ||
             RulesMonitor {
                 rules      : RwLock::new (HashMap::default()),
                 eval_cache : RwLock::new (HashMap::default()),
             }
-        );
-        dm.load_default_rules();
-        dm
+        )
     }
 
-    fn load_default_rules (&self) {
-
+    pub fn load_conf_rules (&self, conf: &Config) {
         let mut rules = self.rules.write().unwrap();
 
-        rules .insert (
-            RulesKey::Rule_ClassId ("#32770".into()),    // Dialog hwnd classes
-            RulesValue { enabled: true, effect: Some (ColorEffect::default()) }
-        );
-
-        for exe in ["msinfo32.exe", "regedit.exe", "mmc.exe", "WinaeroTweaker.exe"] {
-            rules .insert (
-                RulesKey::Rule_Exe (exe.into()),
-                RulesValue { enabled: true, effect: Some (ColorEffect::default()) }
+        for exe in conf.get_auto_overlay_exes() {
+            tracing::debug! ("loading auto-overlay exe rule : {:?}", exe);
+            let _ = rules .insert (
+                RulesKey::Rule_Exe (exe.exe),
+                RulesValue { enabled: true, effect: Some (ColorEffect::default()), excl_exes: None }
             );
         }
+        for class in conf.get_auto_overlay_window_classes() {
+            tracing::debug! ("loading auto-overlay exe rule : {:?}", class);
+            let excl_exes =  if !class.exe_exclusions.is_empty() {
+                Some ( class.exe_exclusions.into_iter().collect::<HashSet<String>>() )
+            } else { None };
+            let _ = rules .insert (
+                RulesKey::Rule_ClassId (class.class),
+                RulesValue { enabled: true, effect: Some (ColorEffect::default()), excl_exes }
+            );
+        }
+        //tracing::debug! ("{:?}", &rules);
     }
+
 
     pub fn register_user_unapplied (&self, hwnd:Hwnd) {
         let mut eval_cache = self.eval_cache.write().unwrap();
@@ -83,7 +100,7 @@ impl RulesMonitor {
         eval_cache .clear();
     }
 
-    pub fn _check_rule (&self, hwnd: Hwnd) -> RulesValue {
+    pub fn _check_rule (&self, hwnd: Hwnd) -> RulesResult {
         let mut eval_cache = self.eval_cache.write().unwrap();
         if let Some (result) = eval_cache .get (&hwnd) {
             *result
@@ -93,31 +110,35 @@ impl RulesMonitor {
             result
         }
     }
-    pub fn check_rule_cached (&self, hwnd: Hwnd) -> Option <RulesValue> {
+    pub fn check_rule_cached (&self, hwnd: Hwnd) -> Option <RulesResult> {
         let eval_cache = self.eval_cache.read().unwrap();
         eval_cache .get (&hwnd) .copied()
     }
-    pub fn re_check_rule (&self, hwnd: Hwnd) -> RulesValue {
+    pub fn re_check_rule (&self, hwnd: Hwnd) -> RulesResult {
         let mut eval_cache = self.eval_cache.write().unwrap();
         let result = self.eval_rules (hwnd);
         eval_cache .insert (hwnd, result);
         result
     }
 
-    fn eval_rules (&self, hwnd:Hwnd) -> RulesValue {
+    fn eval_rules (&self, hwnd:Hwnd) -> RulesResult {
 
         if !check_window_visible(hwnd) || check_window_cloaked(hwnd) {
             return effect_none
         }
 
-        let class_id = get_win_class_by_hwnd(hwnd);
-        if let Some(result) = self.rules.read().unwrap() .get (& RulesKey::Rule_ClassId (class_id)) {
-            return *result;
+        let (class, exe) = (get_win_class_by_hwnd (hwnd), get_exe_by_hwnd (hwnd));
+
+        if let Some(result) = self.rules.read().unwrap() .get (& RulesKey::Rule_ClassId (class)) {
+            if exe.is_some() && result.excl_exes.as_ref().is_some_and (|h| h.contains(&exe.unwrap())) {
+                return effect_none
+            }
+            return result.into();
         }
 
         if let Some(exe) = get_exe_by_hwnd(hwnd) {
             if let Some(result) = self.rules.read().unwrap() .get (& RulesKey::Rule_Exe(exe)) {
-                return *result;
+                return result.into();
             }
         }
 
@@ -137,7 +158,7 @@ pub fn check_window_visible (hwnd:Hwnd) -> bool { unsafe {
 
 pub fn check_window_cloaked (hwnd:Hwnd) -> bool { unsafe {
     let mut cloaked_state: isize = 0;
-    let out_ptr = &mut cloaked_state as *mut isize as *mut c_void;
+    let out_ptr = &mut cloaked_state as *mut isize as *mut _;
     let _ = DwmGetWindowAttribute (hwnd.into(), DWMWA_CLOAKED, out_ptr, size_of::<isize>() as u32);
     cloaked_state != 0
 } }

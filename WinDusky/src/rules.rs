@@ -1,6 +1,9 @@
 #![ allow (non_camel_case_types, non_snake_case, non_upper_case_globals) ]
 
 
+use itertools::Itertools;
+use tracing::info;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
 
@@ -11,7 +14,8 @@ use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameA,
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
 
 use crate::config::Config;
-use crate::effects::ColorEffect;
+use crate::effects::{ColorEffect, ColorEffects};
+use crate::tray;
 use crate::types::*;
 
 #[derive (Debug, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
@@ -35,16 +39,18 @@ pub struct RulesValue {
 
 #[derive (Debug, Copy, Clone)]
 pub struct RulesResult {
-    pub enabled   : bool,
-    pub effect    : Option <ColorEffect>,
+    pub enabled    : bool,
+    pub overridden : bool,
+    pub effect     : Option <ColorEffect>,
 }
 impl From<&RulesValue> for RulesResult {
     fn from (rv: &RulesValue) -> Self {
-        RulesResult { enabled: rv.enabled, effect: rv.effect }
+        RulesResult { enabled: rv.enabled, overridden: false, effect: rv.effect }
     }
 }
 
-const effect_none : RulesResult = RulesResult { enabled: false, effect: None};
+const effect_none      : RulesResult = RulesResult { enabled: false, overridden: false, effect: None};
+const effect_overriden : RulesResult = RulesResult { enabled: false, overridden: true,  effect: None};
 
 
 
@@ -67,37 +73,46 @@ impl RulesMonitor {
         )
     }
 
-    pub fn load_conf_rules (&self, conf: &Config) {
+    pub fn load_conf_rules (&self, conf: &Config, effects:&ColorEffects) {
         let mut rules = self.rules.write().unwrap();
 
         for exe in conf.get_auto_overlay_exes() {
-            tracing::debug! ("loading auto-overlay exe rule : {:?}", exe);
+            //tracing::debug! ("loading auto-overlay exe rule : {:?}", exe);
+            let effect = exe.effect .as_ref() .map (|s| effects.get_by_name(s));
             let _ = rules .insert (
                 RulesKey::Rule_Exe (exe.exe),
-                RulesValue { enabled: true, effect: Some (ColorEffect::default()), excl_exes: None }
+                RulesValue { enabled: true, effect, excl_exes: None }
             );
         }
         for class in conf.get_auto_overlay_window_classes() {
-            tracing::debug! ("loading auto-overlay exe rule : {:?}", class);
+            //tracing::debug! ("loading auto-overlay exe rule : {:?}", class);
             let excl_exes =  if !class.exe_exclusions.is_empty() {
                 Some ( class.exe_exclusions.into_iter().collect::<HashSet<String>>() )
             } else { None };
+            let effect = class.effect .as_ref() .map (|s| effects.get_by_name(s));
             let _ = rules .insert (
                 RulesKey::Rule_ClassId (class.class),
-                RulesValue { enabled: true, effect: Some (ColorEffect::default()), excl_exes }
+                RulesValue { enabled: true, effect, excl_exes }
             );
         }
-        //tracing::debug! ("{:?}", &rules);
+        info! ("The following auto-overlay rules were loaded :");
+        rules .iter() .sorted_by_key (|t| t.0) .enumerate() .for_each (|(i,t)| info!("{:?}.{:?}", i+1, t));
     }
 
 
     pub fn register_user_unapplied (&self, hwnd:Hwnd) {
+        info! ("Registering user un-toggle of overlay: {:?} .. (Override added!)", hwnd);
         let mut eval_cache = self.eval_cache.write().unwrap();
-        eval_cache .insert (hwnd, effect_none);
+        eval_cache .insert (hwnd, effect_overriden);
+        let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
+        tray::update_tray__overrides_count(n_overrides);
     }
-    pub fn clear_rule_overrides (&self) {
+    pub fn clear_user_overrides (&self) {
         let mut eval_cache = self.eval_cache.write().unwrap();
+        let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
+        info! ("Clearing all {:?} user-initiated rules overrides!", n_overrides);
         eval_cache .clear();
+        tray::update_tray__overrides_count(0);
     }
 
     pub fn _check_rule (&self, hwnd: Hwnd) -> RulesResult {
@@ -116,7 +131,11 @@ impl RulesMonitor {
     }
     pub fn re_check_rule (&self, hwnd: Hwnd) -> RulesResult {
         let mut eval_cache = self.eval_cache.write().unwrap();
-        let result = self.eval_rules (hwnd);
+        let mut result = self.eval_rules (hwnd);
+        if result.enabled && result.effect.is_none() {
+            let effect = Some (ColorEffects::instance().get_default());
+            result = RulesResult {enabled: true, overridden: false, effect}
+        }
         eval_cache .insert (hwnd, result);
         result
     }

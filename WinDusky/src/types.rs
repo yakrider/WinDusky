@@ -1,4 +1,4 @@
-
+use std::fmt::Formatter;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use windows::Win32::Foundation::HWND;
@@ -7,7 +7,7 @@ use windows::Win32::Foundation::HWND;
 
 
 // we'll define our own new-type of Hwnd mostly coz HWND doesnt implement Debug, Hash etc
-# [ derive (Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash) ]
+# [ derive (Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash) ]
 pub struct Hwnd (pub isize);
 
 impl Hwnd {
@@ -27,6 +27,12 @@ impl From <isize> for Hwnd {
     fn from (hwnd: isize) -> Self { Hwnd(hwnd) }
 }
 
+// we'll override the printout format to print hex
+impl std::fmt::Debug for Hwnd {
+    fn fmt (&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Hwnd({:#x})", self.0)
+    }
+}
 
 
 

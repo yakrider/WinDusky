@@ -13,10 +13,6 @@ use tao::platform::windows::EventLoopBuilderExtWindows;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
 use crate::dusky::WinDusky;
 
 
@@ -91,7 +87,7 @@ pub fn start_system_tray_monitor() {
     let make_menu_item  = |id, enabled| MenuItem::with_id (id, menu_disp_str(id), enabled, None);
     let make_menu_check = |id, enabled, checked| CheckMenuItem::with_id (id, menu_disp_str(id), enabled, checked, None);
 
-    let is_elev = check_cur_proc_elevated().unwrap_or_default();
+    let is_elev = crate::win_utils::check_cur_proc_elevated().unwrap_or_default();
     let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
     let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, true, None);
 
@@ -170,21 +166,3 @@ pub fn start_system_tray_monitor() {
 
 }
 
-
-
-pub fn check_cur_proc_elevated () -> Option<bool> {
-    check_proc_elevated ( unsafe { GetCurrentProcess() } )
-}
-pub fn check_proc_elevated (h_proc:HANDLE) -> Option<bool> { unsafe {
-    let mut h_token = HANDLE::default();
-    if OpenProcessToken (h_proc, TOKEN_QUERY, &mut h_token) .is_err() {
-        return None;
-    };
-    let mut token_info : TOKEN_ELEVATION = TOKEN_ELEVATION::default();
-    let mut token_info_len = size_of::<TOKEN_ELEVATION>() as u32;
-    GetTokenInformation (
-        h_token, TokenElevation, Some(&mut token_info as *mut _ as *mut _),
-        token_info_len, &mut token_info_len
-    ) .ok()?;
-    Some (token_info.TokenIsElevated != 0)
-} }

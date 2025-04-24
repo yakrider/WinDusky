@@ -15,6 +15,7 @@ mod rules;
 mod tray;
 mod config;
 mod keys;
+mod win_utils;
 
 fn main() {
 

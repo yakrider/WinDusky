@@ -7,25 +7,19 @@ use tracing::info;
 use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
 
-use windows::core::PSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameA, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
-
 use crate::config::Config;
 use crate::effects::{ColorEffect, ColorEffects};
 use crate::tray;
 use crate::types::*;
+use crate::win_utils::*;
+
+
 
 #[derive (Debug, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub enum RulesKey {
     Rule_ClassId (String),
     Rule_Exe (String),
-    //Rule_Exe_Title { exe: String, title: Option<String> },
 }
-// ^^ todo : constructing title checks for all windows is too expensive, just cant do that ..
-// .. so instead, could make a table where we do just the exe check first, and if it suggests title lookup, then we do title check
 
 
 
@@ -39,24 +33,32 @@ pub struct RulesValue {
 
 #[derive (Debug, Copy, Clone)]
 pub struct RulesResult {
-    pub enabled    : bool,
+
+    pub enabled : bool,
+    pub effect  : Option <ColorEffect>,
+
     pub overridden : bool,
-    pub effect     : Option <ColorEffect>,
+    // ^^ we'll set these for manually un-toggled overlays, and treat as hwnd-exclusions from then on
+
+    pub elev_excl : bool,
+    // ^^ we calc this for hwnds if we're not-elevated, so we can print out warnings on impossible overlay attempts
 }
+
 impl From<&RulesValue> for RulesResult {
     fn from (rv: &RulesValue) -> Self {
-        RulesResult { enabled: rv.enabled, overridden: false, effect: rv.effect }
+        RulesResult { enabled:rv.enabled, effect: rv.effect, overridden:false, elev_excl:false }
     }
 }
 
-const effect_none      : RulesResult = RulesResult { enabled: false, overridden: false, effect: None};
-const effect_overriden : RulesResult = RulesResult { enabled: false, overridden: true,  effect: None};
+const effect_none      : RulesResult = RulesResult { enabled: false, effect: None, overridden: false, elev_excl: false };
+const effect_overriden : RulesResult = RulesResult { enabled: false, effect: None, overridden: true,  elev_excl: false };
 
 
 
 
 pub struct RulesMonitor {
-    rules : RwLock <HashMap <RulesKey, RulesValue>>,
+    elevated   : Flag,
+    rules      : RwLock <HashMap <RulesKey, RulesValue>>,
     eval_cache : RwLock <HashMap <Hwnd, RulesResult>>,
 }
 
@@ -67,6 +69,7 @@ impl RulesMonitor {
         static INSTANCE : OnceLock <RulesMonitor> = OnceLock::new();
         INSTANCE .get_or_init ( ||
             RulesMonitor {
+                elevated   : Flag::new (check_cur_proc_elevated().unwrap_or_default()),
                 rules      : RwLock::new (HashMap::default()),
                 eval_cache : RwLock::new (HashMap::default()),
             }
@@ -115,26 +118,19 @@ impl RulesMonitor {
         tray::update_tray__overrides_count(0);
     }
 
-    pub fn _check_rule (&self, hwnd: Hwnd) -> RulesResult {
-        let mut eval_cache = self.eval_cache.write().unwrap();
-        if let Some (result) = eval_cache .get (&hwnd) {
-            *result
-        } else {
-            let result = self.eval_rules (hwnd);
-            eval_cache .insert (hwnd, result);
-            result
-        }
-    }
+
     pub fn check_rule_cached (&self, hwnd: Hwnd) -> Option <RulesResult> {
         let eval_cache = self.eval_cache.read().unwrap();
         eval_cache .get (&hwnd) .copied()
     }
     pub fn re_check_rule (&self, hwnd: Hwnd) -> RulesResult {
         let mut eval_cache = self.eval_cache.write().unwrap();
+
         let mut result = self.eval_rules (hwnd);
+
         if result.enabled && result.effect.is_none() {
             let effect = Some (ColorEffects::instance().get_default());
-            result = RulesResult {enabled: true, overridden: false, effect}
+            result = RulesResult { overridden: false, effect, ..result }
         }
         eval_cache .insert (hwnd, result);
         result
@@ -145,19 +141,19 @@ impl RulesMonitor {
         if !check_window_visible(hwnd) || check_window_cloaked(hwnd) {
             return effect_none
         }
-
         let (class, exe) = (get_win_class_by_hwnd (hwnd), get_exe_by_hwnd (hwnd));
+        let elev_excl = self.elevated.is_clear() && check_hwnd_elevated(hwnd).unwrap_or_default();
 
         if let Some(result) = self.rules.read().unwrap() .get (& RulesKey::Rule_ClassId (class)) {
             if exe.is_some() && result.excl_exes.as_ref().is_some_and (|h| h.contains(&exe.unwrap())) {
                 return effect_none
             }
-            return result.into();
+            return RulesResult { overridden: false, elev_excl, ..result.into() };
         }
 
         if let Some(exe) = get_exe_by_hwnd(hwnd) {
             if let Some(result) = self.rules.read().unwrap() .get (& RulesKey::Rule_Exe(exe)) {
-                return result.into();
+                return RulesResult { overridden: false, elev_excl, ..result.into() };
             }
         }
 
@@ -166,62 +162,6 @@ impl RulesMonitor {
 
 
 }
-
-
-
-
-
-pub fn check_window_visible (hwnd:Hwnd) -> bool { unsafe {
-    IsWindowVisible (hwnd.into()) .as_bool()
-} }
-
-pub fn check_window_cloaked (hwnd:Hwnd) -> bool { unsafe {
-    let mut cloaked_state: isize = 0;
-    let out_ptr = &mut cloaked_state as *mut isize as *mut _;
-    let _ = DwmGetWindowAttribute (hwnd.into(), DWMWA_CLOAKED, out_ptr, size_of::<isize>() as u32);
-    cloaked_state != 0
-} }
-
-
-#[allow (dead_code)]
-pub fn get_win_title (hwnd:Hwnd) -> String { unsafe {
-    const MAX_LEN : usize = 512;
-    let mut lpstr : [u16; MAX_LEN] = [0; MAX_LEN];
-    let copied_len = GetWindowTextW (hwnd.into(), &mut lpstr);
-    String::from_utf16_lossy (&lpstr[..(copied_len as _)])
-} }
-
-
-pub fn get_win_class_by_hwnd (hwnd:Hwnd) -> String { unsafe {
-    let mut lpstr: [u16; 120] = [0; 120];
-    let len = GetClassNameW (hwnd.into(), &mut lpstr);
-    String::from_utf16_lossy(&lpstr[..(len as _)])
-} }
-
-
-pub fn get_exe_by_hwnd (hwnd:Hwnd) -> Option<String> {
-    get_exe_by_pid ( get_pid_by_hwnd (hwnd))
-}
-
-pub fn get_exe_by_pid (pid:u32) -> Option<String> { unsafe {
-    let handle = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-    let mut lpstr: [u8; 256] = [0; 256];
-    let mut lpdwsize = 256u32;
-    if handle.is_err() { return None }
-    let _ = QueryFullProcessImageNameA ( HANDLE (handle.as_ref().unwrap().0), PROCESS_NAME_WIN32, PSTR::from_raw(lpstr.as_mut_ptr()), &mut lpdwsize );
-    if let Ok(h) = handle { let _ = CloseHandle(h); }
-    PSTR::from_raw(lpstr.as_mut_ptr()).to_string() .ok() .and_then (|s| s.split("\\").last().map(|s| s.to_string()))
-} }
-
-pub fn get_pid_by_hwnd (hwnd:Hwnd) -> u32 { unsafe {
-    let mut pid = 0u32;
-    let _ = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
-    pid
-} }
-
-
-
-
 
 
 

@@ -1,7 +1,7 @@
 
 
-## Config settings file for WinDusky appliation .. uses toml format
-# (Note that in toml format, root keys must be listed before any tables with square-brackets are started)
+## Config settings file for WinDusky appliation .. repository: https://github.com/yakrider/WinDusky
+# This file uses the toml format: https://toml.io
 #
 # The application will look for this file (WinDusky.conf.toml) in the same directory from which it is running (if the location is writeable)
 # If that location is not writeable, the config file will pick  ~/AppData/Local/WinDusky/ as conf file location
@@ -13,25 +13,37 @@
 
 # WinDusky conf version string .. this is used to check compatibility and print warnings/errors
 # Upon upgrading the application, and updating any user configs here as desired, can update this version string to remove warning printouts
-dusky_conf_version = 0.13
+dusky_conf_version = 0.14
 
 
 
 # Hotkey to toggle WinDusky on currectly active window, specified as a string ..
-# The default is "Alt+Win+I" .. I for 'invert' .. specified as { key = "I", modifiers = ["Alt", "Win"] }
-# Hotkey specification strings mostly map to tauri hotkey specs .. they are summarized below :
-#   Alt, Shift, Ctrl, Win, A-Z, 0-9, F1-F24, Comma, Period, Plus, Minus, etc,
-#   ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown,
+# Hotkey specification are in keys.rs file in this repo .. they are case-insensitive and summarized below :
+#   Alt, Shift, Ctrl, Win, A-Z, 0-9, F1-F24, Comma, Period, Plus, Minus, SemiColon, Slash, Backslash etc,
+#   Up, Down, Left, Right, Home, End, PgUp, PgDown,
 #   Space, Enter, Backspace, Delete, Insert, Tab, Escape
 #
 # Note: Updates to this config are ONLY picked up upon restarting (not just reloading) the application
-dusky_toggle_hotkey = { key = "I", modifiers = ["Alt", "Win"] }
+# The default is "Alt+Win+I" .. I for 'invert' .. specified as { key = "I", modifiers = ["Alt", "Win"] }
+hotkey__dusky_toggle = { key = "I", modifiers = ["Alt", "Win"] }
 
 
 # Hotkeys to cycle through (next and previous) color-effects in the color-effects list
 # The defaults are Alt+Win+Period for Next, and Alt+Win+Comma for Previous effect
-dusky_next_effect_hotkey = { key = "Period", modifiers = ["Alt", "Win"] }
-dusky_prev_effect_hotkey = { key = "Comma",  modifiers = ["Alt", "Win"] }
+hotkey__next_effect = { key = "Period", modifiers = ["Alt", "Win"] }
+hotkey__prev_effect = { key = "Comma",  modifiers = ["Alt", "Win"] }
+
+
+# Hotkey to clear all active overlays
+# (Once cleared, the windows are also noted as rules overrides such that auto-overlay rules wont apply to them this ssession)
+hotkey__clear_overlays = { key = "F12", modifiers = ["Alt", "Win"] }
+
+# Hotkey to clear all user overriders
+#(These are windows for whom rule based auto-overlay wont be applied as user has previously toggled their overlays off session)
+hotkey__clear_overrides = { key = "Insert", modifiers = ["Alt", "Win"] }
+
+# Hotkey to clear overlays, and also clear all user overrides
+hotkey__clear_all = { key = "Delete", modifiers = ["Alt", "Win"] }
 
 
 
@@ -60,7 +72,7 @@ auto_overlay_exes = [
     { exe = "regedit.exe" },
     { exe = "msinfo32.exe" },
     { exe = "WinaeroTweaker.exe" },
-    { exe = "autohotkeyUX.exe",  effect = "Simple Inversion" },
+    { exe = "AutoHotkeyUX.exe",  effect = "Simple Inversion" },
 ]
 
 
@@ -69,7 +81,7 @@ auto_overlay_exes = [
 # each entry must have the 'class_name' field, and can optionally specify 'effect', and a list of exe to exclude in 'exe_exclusions'
 # Default is to have only "#32770" which is the window class for all dialog popups that windows generates
 auto_overlay_window_classes = [
-    { class_name = "#32770", effect = "default", exe_exclusions = ["notepad++.exe"] },
+    { class_name = "#32770", effect = "default", exe_exclusions = ["notepad++.exe", "SystemInformer.exe"] },
 ]
 
 

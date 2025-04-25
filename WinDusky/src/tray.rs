@@ -32,6 +32,7 @@ fn get_dusky_icon() -> Icon {
 #[derive(Debug)]
 pub enum DuskyEvent {
     MenuAction (MenuEvent),
+    AutoOverlayEnable (bool),
     OverlayUpdate { n_active : usize },
     OverridesUpdate { n_overrides : usize },
 }
@@ -41,6 +42,11 @@ static tray_events_proxy : LazyLock <Mutex <Option <EventLoopProxy <DuskyEvent>>
 
 
 /// these will inject an internal event into sys-tray event-loop which will update tray-menu checkboxes etc
+pub fn update_auto_overlay_enable (enabled: bool) {
+    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+        let _ = proxy.send_event ( DuskyEvent::AutoOverlayEnable (enabled) );
+    }
+}
 pub fn update_tray__overlay_count (n_active: usize) {
     if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
         let _ = proxy.send_event ( DuskyEvent::OverlayUpdate { n_active } );
@@ -54,6 +60,7 @@ pub fn update_tray__overrides_count (n_overrides: usize) {
 
 
 const MENU_ELEVATED         : &str = "is_elevated";
+const MENU_AUTO_OV_ENABLED  : &str = "auto_overlay_enabled";
 const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
 const MENU_USER_OVERRIDES   : &str = "user_overrides";
 const MENU_EDIT_CONF        : &str = "edit_conf";
@@ -62,6 +69,8 @@ const MENU_QUIT             : &str = "quit";
 
 fn menu_disp_str (id:&str) -> &str {
     match id {
+      //MENU_ELEVATED         => "Elevated : ??",
+        MENU_AUTO_OV_ENABLED  => "Auto Overlay Enabled",
         MENU_ACTIVE_OVERLAYS  => "Overlays : 0",
         MENU_USER_OVERRIDES   => "User Overrides : 0",
         MENU_EDIT_CONF        => "Edit Config",
@@ -72,6 +81,8 @@ fn menu_disp_str (id:&str) -> &str {
 }
 fn exec_menu_action (id: &str, wd: &WinDusky) {
     match id {
+      //MENU_ELEVATED         => { /* always disabled */ },
+        MENU_AUTO_OV_ENABLED  => { update_auto_overlay_enable (wd.rules.toggle_auto_overlay_enabled());  }
         MENU_ACTIVE_OVERLAYS  => { wd.clear_overlays() }
         MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides() }
         MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit() }
@@ -91,6 +102,8 @@ pub fn start_system_tray_monitor() {
     let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
     let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, true, None);
 
+    let auto_ov_enabled = make_menu_check (MENU_AUTO_OV_ENABLED, true, true);
+
     let active    = make_menu_check (MENU_ACTIVE_OVERLAYS, true, false);
     let overrides = make_menu_check (MENU_USER_OVERRIDES, true, false);
 
@@ -102,7 +115,7 @@ pub fn start_system_tray_monitor() {
     let sep = PredefinedMenuItem::separator();
 
     let tray_menu = Menu::new();
-    tray_menu .append_items ( &[ &elevated, &sep, &active, &overrides, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
+    tray_menu .append_items ( &[ &elevated, &auto_ov_enabled, &sep, &active, &overrides, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
 
 
     let tray_icon = TrayIconBuilder::new()
@@ -147,6 +160,10 @@ pub fn start_system_tray_monitor() {
             }
             DuskyEvent::MenuAction (event) => {
                 exec_menu_action (&event.id.0, WinDusky::instance());
+            }
+            DuskyEvent::AutoOverlayEnable (enabled) => {
+                auto_ov_enabled.set_checked (enabled);
+                auto_ov_enabled.set_text (if enabled {"Auto Overlay Enabled"} else {"Enable Auto Overlay"})
             }
         }
     };

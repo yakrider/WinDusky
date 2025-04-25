@@ -10,6 +10,7 @@ use crate::config;
 
 
 
+
 // we'll define the simple inversion in code itself as fallback default for missing configs etc
 pub const COLOR_EFF__SIMPLE_INVERSION : MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
     -1.0,  0.0,  0.0,  0.0,  0.0,
@@ -21,12 +22,15 @@ pub const COLOR_EFF__SIMPLE_INVERSION : MAGCOLOREFFECT = MAGCOLOREFFECT { transf
 pub const COLOR_EFF__FALLBACK_DEFAULT : MAGCOLOREFFECT = COLOR_EFF__SIMPLE_INVERSION;
 
 
+
 #[derive (Debug)]
 pub struct ColorEffects {
     effects     : RwLock <HashMap <String, MAGCOLOREFFECT>>,
     cycle_order : RwLock <Vec <(String, MAGCOLOREFFECT)>>,
     default     : ColorEffectAtomic,
 }
+
+
 
 impl ColorEffects {
 
@@ -88,23 +92,30 @@ impl ColorEffects {
 
 
 
+
 #[derive (Debug, Default, Copy, Clone)]
 pub struct ColorEffect (pub usize);
-
-impl ColorEffect {
-    pub fn new (idx:usize) -> ColorEffect { ColorEffect(idx) }
-}
-
 
 #[derive (Debug, Default)]
 pub struct ColorEffectAtomic (AtomicUsize);
 
-impl From<&ColorEffectAtomic> for ColorEffect {
+
+impl ColorEffect {
+    pub fn new (idx:usize) -> ColorEffect {
+        ColorEffect(idx)
+    }
+    pub fn get (&self) -> MAGCOLOREFFECT {
+        let effs = ColorEffects::instance();
+        let cycler = effs.cycle_order.read().unwrap();
+        cycler .get (self.0 % cycler.len()) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
+    }
+}
+
+impl From <&ColorEffectAtomic> for ColorEffect {
     fn from (eff: &ColorEffectAtomic) -> Self {
         ColorEffect (eff.0 .load(Ordering::Relaxed))
     }
 }
-
 
 impl ColorEffectAtomic {
 
@@ -116,28 +127,23 @@ impl ColorEffectAtomic {
     }
 
     pub fn get (&self) -> MAGCOLOREFFECT {
-        let effs = ColorEffects::instance();
-        let cycler = effs.cycle_order.read().unwrap();
-        let idx = self.0.load(Ordering::Acquire) % cycler.len();
-        cycler .get(idx) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
+        ColorEffect::from(self).get()
     }
 
-    pub fn cycle_next (&self) -> MAGCOLOREFFECT {
+    pub fn cycle_next (&self) -> ColorEffect {
         let effs = ColorEffects::instance();
         let cycler = effs.cycle_order.read().unwrap();
         let cyc_len = cycler.len();
         let prior = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, |cur| Some((cur + 1) % cyc_len));
         let next = (prior.unwrap() + 1) % cyc_len;
-        cycler .get(next) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
+        ColorEffect(next)
     }
-    pub fn cycle_prev (&self) -> MAGCOLOREFFECT {
+    pub fn cycle_prev (&self) -> ColorEffect {
         let effs = ColorEffects::instance();
         let cycler = effs.cycle_order.read().unwrap();
         let cyc_len = cycler.len();
         let prior = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, |cur| Some((cur + cyc_len - 1) % cyc_len));
         let prev = (prior.unwrap() + cyc_len - 1) % cyc_len;
-        cycler .get(prev) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
-
+        ColorEffect(prev)
     }
-    // ^^ todo .. could update these to use fetch_update, but shouldnt matter for our usecase
 }

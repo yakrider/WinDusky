@@ -2,7 +2,7 @@
 
 //use no_deadlocks::RwLock;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::thread;
@@ -26,8 +26,9 @@ use crate::rules::{RulesMonitor, RulesResult};
 use crate::win_utils::wide_string;
 use crate::{tray, types::*};
 
+
 const HOST_WINDOW_CLASS_NAME : &str = "WinDuskyOverlayWindowClass";
-const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host Window";
+const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host";
 
 const TIMER_TICK_MS : u32 = 16;
 
@@ -65,6 +66,7 @@ pub struct WinDusky {
 
     thread_id  : AtomicU32,
     overlays   : RwLock <HashMap <Hwnd, Overlay>>,
+    hosts      : RwLock <HashSet <Hwnd>>,
     cur_timer  : AtomicUsize,
     ov_topmost : HwndAtomic,
 }
@@ -81,8 +83,8 @@ impl Overlay {
         // Create the host for the magniier control
         let Ok(host) = CreateWindowExW (
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            PCWSTR::from_raw (wide_string(HOST_WINDOW_CLASS_NAME).as_ptr()),
-            PCWSTR::from_raw (wide_string(HOST_WINDOW_TITLE).as_ptr()),
+            PCWSTR::from_raw (wide_string (HOST_WINDOW_CLASS_NAME).as_ptr()),
+            PCWSTR::from_raw (wide_string (&format!("{} for {:#x}", HOST_WINDOW_TITLE, target.0)).as_ptr()),
             WS_POPUP, 0, 0, 0, 0, None, None, h_inst, None
         ) else {
             return Err (format!("CreateWindowExW (Host) failed with error: {:?}", GetLastError()));
@@ -218,6 +220,7 @@ impl WinDusky {
 
                 thread_id  : AtomicU32::default(),
                 overlays   : RwLock::new (HashMap::default()),
+                hosts      : RwLock::new (HashSet::default()),
                 cur_timer  : AtomicUsize::default(),
                 ov_topmost : HwndAtomic::default(),
             }
@@ -287,20 +290,22 @@ impl WinDusky {
             warn! ("Ignoring overlay creation request for {:?} .. Overlay already exists!!", &target);
             return
         }
-        info! ("Creating Overlay on target {:?} with effect {:?}", target, effect);
         if let Ok(overlay) = Overlay::new (target, effect) {
             if overlays.is_empty() { self.ensure_timer_running() }
+            self.hosts.write().unwrap().insert(overlay.host);
             overlays.insert (target, overlay);
             tray::update_tray__overlay_count (overlays.len());
         }
+        info! ("Created Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
     }
 
     fn remove_overlay (&self, target:Hwnd) {
         let mut overlays = self.overlays.write().unwrap();
         if let Some(overlay) = overlays.remove (&target) {
             // ^^ the returned value is dropped and so its hwnds will get cleaned up
+            self.hosts.write().unwrap().remove(&overlay.host);
             if overlay.target == self.ov_topmost.load() { self.ov_topmost.clear(); }
-            info! ("Removed Overlay from target {:?}", overlay.target);
+            info! ("Removed Overlay from {:?}, tot: {:?}", overlay.target, overlays.len());
         }
         if overlays.is_empty() { self.disable_timer() }
         tray::update_tray__overlay_count (overlays.len());
@@ -326,6 +331,7 @@ impl WinDusky {
             if let Some(overlay) = overlays.remove(&hwnd) {
                 let _ = PostMessageW (Some(overlay.host.into()), WM_CLOSE, Default::default(), Default::default());
                 let _ = InvalidateRect (Some(hwnd.into()), None, true);
+                self.hosts.write().unwrap().remove(&overlay.host);
                 self.rules.register_user_unapplied (hwnd);
             }
         }
@@ -357,48 +363,56 @@ impl WinDusky {
 
         // So we got an hwnd that doesnt have overlay yet, and we wanna see if auto-overlay rules apply to it
 
-        // first we'll check if we have have evaluated auto-overlay rules for this previously
+        if !self.rules.check_auto_overlay_enabled() { return }
+
+        // next we'll check if we have have evaluated auto-overlay rules for this previously
         let result = self.rules.check_rule_cached (hwnd);
 
         if let Some ( RulesResult { enabled: false, .. } ) = result {
             return;
         }
         else if let Some ( RulesResult { enabled: true, effect, ..} ) = result {
-            self.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+            self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
             return
         }
 
+
         // so looks like this is first ever fgnd for this, so we'd like to eval from scratch ..
-        let result = self.rules.re_check_rule(hwnd);
-
-        // but we'll ditch early if elevation restrictions apply (i.e this guy is elev but we're not)
-        if let RulesResult { elev_excl: true, .. } = result {
-            warn! ("!! WARNING !! .. WinDusky is NOT Elevated. Cannot overlay elevated {:?}", hwnd);
-            return;
-        }
-
-        // otherwise, if it passed rules, we can go ahead and request an overlay cration
-        if let RulesResult { enabled: true, effect, .. } = result {
-            self.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
-        }
-
-        // however, as seen before, it takes time for explorer windows to get all their properties after their new hwnds report fgnd
-        // .. so we'll have to sit on delays and check it periodically (just like done in switche/krusty etc)
-
+        // .. but eval for luminance requies screen cap, so we'll spawn thread to do all that
         thread::spawn ( move || {
+
+            // further, doing a screen cap too early (esp with BitBlt) can capture not-quite-painted hwnds
+            // .. so we'll put up a small delay before we go about the hwnd screen capture business
+            thread::sleep (Duration::from_millis (self.rules.get_auto_overlay_delay_ms() as _));
+
+            let result = self.rules.re_check_rule(hwnd);
+
+            // but we'll ditch early if elevation restrictions apply (i.e this guy is elev but we're not)
+            if let RulesResult { elev_excl: true, .. } = result {
+                warn! ("!! WARNING !! .. WinDusky is NOT Elevated. Cannot overlay elevated {:?}", hwnd);
+                return;
+            }
+
+            // otherwise, if it passed rules, we can go ahead and request an overlay creation
+            if let RulesResult { enabled: true, effect, .. } = result {
+                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
+            }
+
+            // however, as seen before, it takes time for explorer windows to get all their properties after their new hwnds report fgnd
+            // .. so we'll just sit on delays and check it a couple times (just like done in switche/krusty etc)
 
             thread::sleep (Duration::from_millis(300));
 
             if self.overlays.read().unwrap().contains_key(&hwnd) { return }
             if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
             }
 
             thread::sleep (Duration::from_millis(500));
 
             if self.overlays.read().unwrap().contains_key(&hwnd) { return }
             if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_creation (hwnd, effect.unwrap_or_default());
+                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()))
             }
 
         } );
@@ -458,18 +472,24 @@ impl WinDusky {
                     self.remove_overlay (target);
                     self.rules.register_user_unapplied (target);
                 } else {
-                    self.create_overlay (target, self.effects.get_default());
-                    // ^^ todo: could update this to check rules for specified effect?
+                    // if there was some effect for it in eval cache, we'll use that or the overlay
+                    // (e.g. this would preserve last effect when the overlay might have been last toggled on/off)
+                    let effect = self.rules.check_rule_cached (target) .and_then (|r| r.effect) .unwrap_or (self.effects.get_default());
+                    self.create_overlay (target, effect);
                 }
             }
             HOTKEY_ID__NEXT_EFFECT => {
                 if let Some(overlay) = self.overlays .read().unwrap() .get (&target){
-                    overlay .apply_color_effect (overlay.effect.cycle_next());
+                    let effect = overlay.effect.cycle_next();
+                    overlay .apply_color_effect (effect.get());
+                    self.rules.update_cached_rule_result_effect (target, effect);
                 }
             }
             HOTKEY_ID__PREV_EFFECT => {
                 if let Some(overlay) = self.overlays .read().unwrap() .get (&target){
-                    overlay .apply_color_effect (overlay.effect.cycle_prev());
+                    let effect = overlay.effect.cycle_prev();
+                    overlay .apply_color_effect (effect.get());
+                    self.rules.update_cached_rule_result_effect (target, effect);
                 }
             }
             HOTKEY_ID__CLEAR_OVERLAYS => {
@@ -533,6 +553,9 @@ impl WinDusky {
         //     let ov = if overlays.contains_key(&hwnd.into()) { "ov" } else { "  " };
         //     tracing::debug!("got event {:#06x} for {} hwnd {:?}, id-object {:#06x}, id-child {:#06x}", event, ov, hwnd, id_object, _id_child);
         // }
+
+        // first off, lets ignore our own overlay hosts
+        if self.hosts.read().unwrap().contains(&hwnd) { return }
 
         match event {
             EVENT_OBJECT_HIDE | EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {

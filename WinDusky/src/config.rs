@@ -56,7 +56,7 @@ pub struct AutoOverlayExe {
 pub struct AutoOverlayClass {
     pub class : String,
     pub effect : Option<String>,
-    pub exe_exclusions : Vec<String>,
+    pub exclusion_exes : Vec<String>,
 }
 
 
@@ -249,7 +249,7 @@ impl Config {
             .unwrap_or (self.default.get(flag_name).unwrap().as_bool().unwrap())
     }
 
-    fn _get_float (&self, key:&str) -> f32 {
+    fn get_float (&self, key:&str) -> f32 {
         self.toml.read().unwrap().as_ref()
             .and_then (|t| t.get(key))
             .and_then (|t| t.as_float().map(|n| n as f32))
@@ -291,10 +291,10 @@ impl Config {
         true
     }
 
-    pub fn check_flag__logging_enabled (&self) -> bool {
-        self.check_flag ( "logging_enabled" )
-    }
 
+    pub fn check_flag__logging_enabled (&self) -> bool {
+        self.check_flag ("logging_enabled")
+    }
     pub fn get_log_level (&self) -> LevelFilter {
         if !self.check_flag__logging_enabled() {
             return LevelFilter::OFF;
@@ -339,6 +339,20 @@ impl Config {
 
 
 
+    pub fn get_auto_overlay_luminance__threshold (&self) -> u8 {
+        let lum_fl = self.get_float ("auto_overlay_luminance__threshold");
+        (u8::MAX as f32 * lum_fl.clamp(0.0, 1.0)) as u8
+    }
+
+    pub fn get_auto_overlay_luminance__delay_ms (&self) -> u32 {
+        self.get_float ("auto_overlay_luminance__delay_ms") as u32
+    }
+
+    pub fn get_auto_overlay_luminance__exclusion_exes (&self) -> Vec<String> {
+        self.get_string_array ("auto_overlay_luminance__exclusion_exes")
+    }
+
+
     fn parse_auto_overlay_exe (v : &Value) -> Option <AutoOverlayExe> {
         if let Some(entry) = v .as_inline_table() {
             if let Some(exe) = entry .get("exe") .and_then (|s| s.as_str() .map (|s| s.to_string())) {
@@ -366,11 +380,11 @@ impl Config {
                 let effect = entry .get("effect")
                     .and_then (|s| s.as_str() .map (|s| s.to_string()))
                     .filter (|eff| eff != "default");
-                let exe_exclusions = entry .get("exe_exclusions")
+                let exclusion_exes = entry .get("exclusion_exes")
                     .and_then (|s| s.as_array())
                     .map (|a| a.iter() .filter_map (|s| s.as_str().map(|s| s.to_string())) .collect::<Vec<_>>())
                     .unwrap_or_default();
-                let result = AutoOverlayClass { class, effect, exe_exclusions };
+                let result = AutoOverlayClass { class, effect, exclusion_exes };
                 //tracing::debug! ("parsed auto-overlay-class entry: {:?}", &result);
                 return Some (result)
             }

@@ -9,6 +9,7 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 use atomic_refcell::AtomicRefCell;
 use crate::config::Config;
 use crate::effects::{ColorEffect, ColorEffects};
+use crate::luminance::calculate_avg_luminance;
 use crate::tray;
 use crate::types::*;
 use crate::win_utils::*;
@@ -75,6 +76,9 @@ pub struct RulesMonitor {
     // ^^ we'll load exclusions to luminance based auto-overlay rule here
     // .. and since this is only loaded at init time, we'll use AtomicRefCell instead of RwLock for efficiency
 
+    auto_overlay_lum__use_bitblt : Flag,
+    // ^^ whether the confs specify to use BitBlt (the altternate method) instead of the default PrintWindow
+
     auto_overlay_lum__delay_ms : AtomicU32,
     // ^^ since many windows even for dark-mode apps come up white before they get painted, we'll add a configurable delay
 
@@ -96,9 +100,10 @@ impl RulesMonitor {
                 elevated : Flag::new (check_cur_proc_elevated().unwrap_or_default()),
                 auto_overlay_enabled : Flag::new (true),
 
-                auto_overlay_lum__thresh    : AtomicU8::default(),
-                auto_overlay_lum__excl_exes : AtomicRefCell::new (HashSet::default()),
-                auto_overlay_lum__delay_ms  : AtomicU32::default(),
+                auto_overlay_lum__thresh     : AtomicU8::default(),
+                auto_overlay_lum__excl_exes  : AtomicRefCell::new (HashSet::default()),
+                auto_overlay_lum__use_bitblt : Flag::default(),
+                auto_overlay_lum__delay_ms   : AtomicU32::default(),
 
                 rules : AtomicRefCell::new (HashMap::default()),
 
@@ -115,6 +120,10 @@ impl RulesMonitor {
         self.auto_overlay_lum__delay_ms .store (
             conf.get_auto_overlay_luminance__delay_ms(), Ordering::Relaxed
         );
+        self.auto_overlay_lum__use_bitblt .store (
+            conf.get_auto_overlay_luminance__use_alternate()
+        );
+
         let mut lum_excl_exes = self.auto_overlay_lum__excl_exes .borrow_mut();
         conf.get_auto_overlay_luminance__exclusion_exes() .into_iter() .for_each (|s| { lum_excl_exes .insert(s); } );
         info! ("lum auto-ov excl exes: {:?}", &lum_excl_exes);
@@ -211,9 +220,11 @@ impl RulesMonitor {
         if !self.auto_overlay_lum__excl_exes .borrow() .contains (exe.as_ref().unwrap()) {
             let lum_thresh = self.auto_overlay_lum__thresh .load (Ordering::Relaxed);
             if lum_thresh > 0 {
-                if let Some (lum) = calculate_avg_luminance (hwnd) {
+                if let Some (lum) = calculate_avg_luminance (hwnd, self.auto_overlay_lum__use_bitblt .is_set()) {
                     //tracing::debug! ("got luminance {:?} for {:?}", lum, hwnd);
-                    if lum > lum_thresh {
+                    if lum != u8::MIN && lum != u8::MAX && lum > lum_thresh {
+                        // ^^ we disable [0, 255] values as that typically means the window hasnt painted itself etc
+                        // ^^ and since we do multiple evals for first-seen hwnds, we'll just come back to this later
                         info! ("Found avg luminance of {:?} for {:?} .. will auto-apply an overlay!", lum, hwnd);
                         return RulesResult { enabled:true, elev_excl, ..RulesResult::default() }
                     }

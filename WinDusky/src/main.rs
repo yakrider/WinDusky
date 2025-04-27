@@ -16,6 +16,7 @@ mod tray;
 mod config;
 mod keys;
 mod win_utils;
+mod luminance;
 
 fn main() {
 

@@ -7,14 +7,11 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use crate::types::Hwnd;
 use std::os::windows::prelude::OsStrExt;
 use windows::core::{BOOL, PSTR};
-use windows::Win32::Foundation::RECT;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows::Win32::Graphics::Gdi::{CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, GetDC, ReleaseDC, BitBlt, SRCCOPY};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-use windows::Win32::Storage::Xps::{PrintWindow, PW_CLIENTONLY};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameA, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetClientRect, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOPMOST};
+use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, EnumWindows, GetClassNameW, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOPMOST};
 
 
 
@@ -142,242 +139,39 @@ unsafe extern "system" fn win_enum_cb_no_filt (hwnd:HWND, _:LPARAM) -> BOOL {
 
 
 
-/// Capture window pixels using PrintWindow
-// Using PrintWindow has the advantage that it should get the window capture even when partially obscured etc
-// Otoh, for hwnds with MDI child (e.g. Device Manager aka mmc.exe), the MDI child content is not captured
-// (and in theory its prob slower than using the BitBlt alternative below)
-fn capture_hwnd__PrintWindow (hwnd: Hwnd) -> Option<(Vec<u8>, i32, i32)> { unsafe {
+/// Checks if a window has a direct child with the class name "MDICLIENT".
+pub fn is_mdi_window (hwnd: Hwnd) -> bool { unsafe {
+    // we'll set the LPARAM to point to a bool we expect the callback to fill if it finds MDICLIENT child hwnd
+    let mut found_mdi = false;
+    let found_mdi_ptr = &mut found_mdi as *mut bool;
 
-    let hwnd_win: HWND = hwnd.into();
-    let mut rect = RECT::default();
-    if GetClientRect (hwnd_win, &mut rect).is_err() {
-        return None;
-    }
+    let _ = EnumChildWindows (Some(hwnd.into()), Some (enum_child_proc_check_mdi), LPARAM (found_mdi_ptr as _));
+    // ^^ EnumChildWindows calls the callback for each child hwnd it finds
 
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-
-    if width <= 0 || height <= 0 {
-        return None; // Invalid dimensions
-    }
-
-    // Create a device context (DC) compatible with the window
-    let hdc_screen = GetDC(None);
-    if hdc_screen.is_invalid() { return None; }
-    let hdc_mem = CreateCompatibleDC (Some(hdc_screen));
-
-    if hdc_mem.is_invalid() {
-        let _ = ReleaseDC(None, hdc_screen);
-        return None;
-    }
-
-    // Create a bitmap compatible with the window DC
-    let h_bitmap = CreateCompatibleBitmap(hdc_screen, width, height); // Use screen DC for compatibility
-
-    let _ = ReleaseDC(None, hdc_screen);
-
-    if h_bitmap.is_invalid() {
-        let _ = DeleteDC(hdc_mem);
-        return None;
-    }
-
-    // Select the bitmap into the memory DC
-    let h_old_bitmap = SelectObject(hdc_mem, h_bitmap.into());
-    if h_old_bitmap.is_invalid() {
-        let _ = DeleteObject(h_bitmap.into());
-        let _ = DeleteDC(hdc_mem);
-        return None;
-    }
-
-    // Use PrintWindow to draw the window into the memory DC
-    // PW_RENDERFULLCONTENT might be needed for some UI frameworks, but start without it
-    //let print_result = PrintWindow (hwnd_win, hdc_mem, PRINT_WINDOW_FLAGS::default());
-    let print_result = PrintWindow (hwnd_win, hdc_mem, PW_CLIENTONLY);
-
-    // Deselect the bitmap
-    let _ = SelectObject(hdc_mem, h_old_bitmap);
-
-    if !print_result.as_bool() {
-        let _ = DeleteObject(h_bitmap.into());
-        let _ = DeleteDC(hdc_mem);
-        return None;
-    }
-
-    // Prepare to get bitmap data
-    let bmih = BITMAPINFOHEADER {
-        biSize: size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: width,
-        biHeight: -height, // Negative height indicates top-down DIB
-        biPlanes: 1,
-        biBitCount: 32, // Request 32-bit BGRA format
-        biCompression: BI_RGB.0,
-        biSizeImage: 0, // Can be 0 for BI_RGB
-        biXPelsPerMeter: 0,
-        biYPelsPerMeter: 0,
-        biClrUsed: 0,
-        biClrImportant: 0,
-    };
-    let mut bmi = BITMAPINFO {
-        bmiHeader: bmih,
-        bmiColors: Default::default(), // No color table needed for BI_RGB
-    };
-
-    let buffer_size = (width * height * 4) as usize; // 4 bytes per pixel (BGRA)
-    let mut buffer: Vec<u8> = vec![0; buffer_size];
-
-    // Get the actual bitmap data
-    let result = GetDIBits (
-        hdc_mem, h_bitmap,
-        0, height as u32,   // scan lines to start from, and number of scan lines
-        Some(buffer.as_mut_ptr() as *mut _),
-        &mut bmi,
-        DIB_RGB_COLORS,
-    );
-
-    // Clean up GDI objects
-    let _ = DeleteObject(h_bitmap.into());
-    let _ = DeleteDC(hdc_mem);
-
-    if result == 0 || result == windows::Win32::Foundation::ERROR_INVALID_PARAMETER.0 as i32 {
-         None // Failed to get bits
-    } else {
-         Some((buffer, width, height)) // Return BGRA buffer, width, height
-    }
+    if found_mdi { tracing::debug! ("Identified {:?} as MDI app window", hwnd); }
+    found_mdi
 } }
 
-
-
-
-
-
-/// Capture window pixels using BitBlt
-// This copies pixels for the rect from the eqv of screen buffer .. so isnt impacted by MDI etc, and should be faster
-// However, if there are other windows obscuring the target, e.g. because of some TOPMOST widdget etc, those will be captured too
-fn capture_hwnd__BitBlt (hwnd: Hwnd) -> Option<(Vec<u8>, i32, i32)> { unsafe {
-    let hwnd: HWND = hwnd.into();
-    let mut rect = RECT::default();
-    if GetClientRect(hwnd, &mut rect).is_err() {
-        return None;
+/// Callback for EnumChildWindows to check for "MDICLIENT" class.
+unsafe extern "system" fn enum_child_proc_check_mdi (hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // if we found the mdi-child window, we set the LPARAM pointed boolean true (and stop enum by returning false)
+    let found_mdi_ptr = lparam.0 as *mut bool;
+    if found_mdi_ptr.is_null() {
+        return false.into();
     }
+    let mut class_name_buf: [u16; 64] = [0; 64];
+    // ^^ just needs to be enough for "MDICLIENT" + null
 
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-
-    if width <= 0 || height <= 0 {
-        return None; // Invalid dimensions
+    let len = GetClassNameW (hwnd, &mut class_name_buf);
+    if len > 0 {
+        let class_name = String::from_utf16_lossy (&class_name_buf [..len as _]);
+        if class_name.eq_ignore_ascii_case ("MDIClient") {
+            *found_mdi_ptr = true;
+            return false.into();
+        }
     }
-
-    // Get the device context (DC) for the window
-    let hdc_win = GetDC(Some(hwnd));
-    if hdc_win.is_invalid() { return None }
-
-    // Create a memory DC compatible with the window DC
-    let hdc_mem = CreateCompatibleDC(Some(hdc_win));
-    if hdc_mem.is_invalid() {
-        let _ = ReleaseDC(Some(hwnd), hdc_win);
-        return None;
-    }
-
-    // Create a bitmap compatible with the window DC
-    let h_bitmap = CreateCompatibleBitmap(hdc_win, width, height);
-    if h_bitmap.is_invalid() {
-        let _ = DeleteDC(hdc_mem);
-        let _ = ReleaseDC(Some(hwnd), hdc_win);
-        return None;
-    }
-
-    // Select the bitmap into the memory DC
-    let h_old_bitmap = SelectObject(hdc_mem, h_bitmap.into());
-    if h_old_bitmap.is_invalid() {
-        let _ = DeleteObject(h_bitmap.into());
-        let _ = DeleteDC(hdc_mem);
-        let _ = ReleaseDC(Some(hwnd), hdc_win);
-        return None;
-    }
-
-    // Use BitBlt to copy from window DC to memory DC
-    let bitblt_result = BitBlt(hdc_mem, 0, 0, width, height, Some(hdc_win), 0, 0, SRCCOPY);
-
-    // Deselect the bitmap
-    let _ = SelectObject(hdc_mem, h_old_bitmap);
-
-    // Release the window DC *before* checking BitBlt result
-    let _ = ReleaseDC(Some(hwnd), hdc_win);
-
-    if bitblt_result.is_err() {
-        let _ = DeleteObject(h_bitmap.into());
-        let _ = DeleteDC(hdc_mem);
-        return None; // BitBlt failed
-    }
-
-    // Prepare to get bitmap data (same as PrintWindow version)
-    let bmih = BITMAPINFOHEADER {
-        biSize: size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: width,
-        biHeight: -height, // Negative height indicates top-down DIB
-        biPlanes: 1,
-        biBitCount: 32, // Request 32-bit BGRA format
-        biCompression: BI_RGB.0,
-        biSizeImage: 0,
-        biXPelsPerMeter: 0,
-        biYPelsPerMeter: 0,
-        biClrUsed: 0,
-        biClrImportant: 0,
-    };
-    let mut bmi = BITMAPINFO {
-        bmiHeader: bmih,
-        bmiColors: Default::default(),
-    };
-
-    let buffer_size = (width * height * 4) as usize;
-    let mut buffer: Vec<u8> = vec![0; buffer_size];
-
-    let result = GetDIBits (
-        hdc_mem, h_bitmap,
-        0, height as u32,
-        Some(buffer.as_mut_ptr() as *mut _),
-        &mut bmi,
-        DIB_RGB_COLORS,
-    );
-
-    // Clean up GDI objects
-    let _ = DeleteObject(h_bitmap.into());
-    let _ = DeleteDC(hdc_mem);
-
-    if result == 0 || result == windows::Win32::Foundation::ERROR_INVALID_PARAMETER.0 as i32 {
-         None
-    } else {
-         Some((buffer, width, height))
-    }
-} }
-
-
-
-/// Calculates the average luminance of an hwnd
-pub fn calculate_avg_luminance (hwnd: Hwnd) -> Option<u8> {
-
-    //let (buffer, width, height) = capture_hwnd__PrintWindow (hwnd)?;
-    let (buffer, width, height) = capture_hwnd__BitBlt (hwnd)?;
-
-    if width <= 0 || height <= 0 || buffer.len() != (width * height * 4) as usize {
-        return None;
-    }
-
-    let num_pixels = (width * height) as usize;
-    let mut total_luminance: f64 = 0.0;
-
-    for pixel_index in 0..num_pixels {
-        let base_idx = pixel_index * 4;
-        let b = buffer[base_idx] as f64 / 255.0;
-        let g = buffer[base_idx + 1] as f64 / 255.0;
-        let r = buffer[base_idx + 2] as f64 / 255.0;
-        //let a = buffer[base_idx + 3] as f64 / 255.0;
-        // ^^ ignore alpha as it isnt even consistently specified for non-layered hwnds
-
-        // Use the BT.709 formula to add up human-eye luminance of R/G/B colors
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        total_luminance += luminance;
-    }
-
-    Some ((total_luminance / num_pixels as f64 * u8::MAX as f64) as u8)
+    true.into()
 }
+
+
+

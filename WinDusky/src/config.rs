@@ -352,6 +352,10 @@ impl Config {
         self.get_string_array ("auto_overlay_luminance__exclusion_exes")
     }
 
+    pub fn get_auto_overlay_luminance__use_alternate (&self) -> bool {
+        self.check_flag ("auto_overlay_luminance__use_alternate_method")
+    }
+
 
     fn parse_auto_overlay_exe (v : &Value) -> Option <AutoOverlayExe> {
         if let Some(entry) = v .as_inline_table() {

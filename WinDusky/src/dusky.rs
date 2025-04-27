@@ -322,10 +322,10 @@ impl WinDusky {
 
     pub(crate) fn clear_overlays (&self) { unsafe {
         let mut overlays = self.overlays.write().unwrap();
+        info! ("Clearing all {:?} Color Effect Overlays", overlays.len());
         if overlays.is_empty() {
             return
         }
-        info! ("Clearing all {:?} Color Effect Overlays", overlays.len());
         let hwnds : Vec<_> = overlays.keys().copied().collect();
         for hwnd in hwnds {
             if let Some(overlay) = overlays.remove(&hwnd) {
@@ -398,8 +398,9 @@ impl WinDusky {
                 self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
             }
 
-            // however, as seen before, it takes time for explorer windows to get all their properties after their new hwnds report fgnd
+            // however, as seen before, it takes time for some windows to get all their properties after newly created hwnds report fgnd
             // .. so we'll just sit on delays and check it a couple times (just like done in switche/krusty etc)
+            // The easiest way to test the utility of this is prob to start something like perfmon.exe w/ and w/o delay-waits
 
             thread::sleep (Duration::from_millis(300));
 

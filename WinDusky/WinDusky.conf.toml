@@ -11,9 +11,22 @@
 
 
 
+
 # WinDusky conf version string .. this is used to check compatibility and print warnings/errors
 # Upon upgrading the application, and updating any user configs here as desired, can update this version string to remove warning printouts
-dusky_conf_version = 0.16
+dusky_conf_version = 0.17
+
+
+
+# Enable logging for debugging or reporting errors .. default is false
+# When enabled, the log files with names like "WinDusky_log.<date>.log" will be generated in the same location as the active config file
+# Note: Enabling logging is only picked up upon restarting the application
+logging_enabled = true
+
+# Level of logging (if enabled) .. default is "INFO" .. options are "DEBUG", "INFO", "WARN", "ERROR"
+logging_level = "INFO"
+
+
 
 
 
@@ -35,11 +48,11 @@ hotkey__prev_effect = { key = "Comma",  modifiers = ["Alt", "Win"] }
 
 
 # Hotkey to clear all active overlays
-# (Once cleared, the windows are also noted as rules overrides such that auto-overlay rules wont apply to them this ssession)
+# Once cleared, the windows are also remmebered as rules overrides such that auto-overlay rules wont apply to them this ssession
 hotkey__clear_overlays = { key = "F12", modifiers = ["Alt", "Win"] }
 
-# Hotkey to clear all user overriders
-#(These are windows for whom rule based auto-overlay wont be applied as user has previously toggled their overlays off session)
+# Hotkey to clear all user toggling performed on overlays, including overrides to any auto-applied overlays
+# Clearing these means auto-overlay rules can reapply to windows when they come to foreground next
 hotkey__clear_overrides = { key = "Insert", modifiers = ["Alt", "Win"] }
 
 # Hotkey to clear overlays, and also clear all user overrides
@@ -47,64 +60,70 @@ hotkey__clear_all = { key = "Delete", modifiers = ["Alt", "Win"] }
 
 
 
-# Enable logging for debugging or reporting errors .. default is false
-# When enabled, the log files with names like "WinDusky_log.<date>.log" will be generated in the same location as the active config file
-# Note: Enabling logging is only picked up upon restarting the application
-logging_enabled = true
-
-# Level of logging (if enabled) .. default is "INFO" .. options are "DEBUG", "INFO", "WARN", "ERROR"
-logging_level = "DEBUG"
-
 
 
 
 # --- Auto Overlay Configuration ---
-# Note: The 'effect' field here now refers to names defined in [color_effects].
+
+# Note: The 'effect' field for rules defined here can refer to names defined in the [[effects]] tables.
 # Use "default" to apply the effect specified in 'effects_default'
-# This default also gets used if notthing is specified
+# This default also gets used if nothing is specified
 
 
 # Average luminance threshold (darkest 0.0 and brightest 1.0) above which a window should automatically have the default overlay applied
+# For efficiency, WinDusky makes a luminance calculation for any window only ONCE when it first sees the window in foreground
+# Beyond that or after the user hotkey-toggles any auto-overlay off, the state is remembered and used for that sessions (unless cleared)
 # The lack of this setting, or this being set to 0.0 means luminance based auto-overlay is to be disabled
 # The default value is 0.7
 # Note: Using this mechanism is recommended, and if so, the other rules can be commented out, else can uncomment the other rules
 auto_overlay_luminance__threshold = 0.7
 
 
-# Windows for some app with dark-mode support initially come up with white background before the app paints them dark
+# Typically WinDusky uses the PrintWindow method to have request target app to draw its own pixels for us to calculate average luminance on
+# An alternate method is to directly capture the screen pixels at the window's position (via BitBlt) to calculate luminance.
+# The screen capture method is actually faster, but is more likely to face issues from capturing windows before they are ready, or are obscured etc
+# One can try both methods to see if one works better for the applications they use, or if they want the slight speed-up of this 'alternate' method
+# Note that if using the alternate method, you'll prob want a different or expanded set of exe-exclusions than for the default method
+auto_overlay_luminance__use_alternate_method = false
+
+
+# Windows for some apps with native dark-mode can initially come up with white background before the app paints them dark
 # Specifying a delay here can help avoid some of those, at the cost of making overlays slower for all newly created windows
-# The default for this global setting is 100 (in milliseconds)
-# (Alternatively, can simply add those exes to the exe exclusion list instead)
-auto_overlay_luminance__delay_ms = 100
+# The suggested value for this, if using alternate method, is 100 (in milliseconds), else a value of 0 can still be adequate
+# (In addition, can simply add any such problematic exes to the exe exclusion list instead)
+auto_overlay_luminance__delay_ms = 0
 
 
 # Comma separated list of exes to exclude from luminance based auto-overlay application
-# For instance, windows of browsers can be expected to change based on content, so hwnd luminance based rules arent appropriate
+# For instance, windows of browsers can be expected to change based on content, so one time hwnd luminance based rules might not be appropriate
 auto_overlay_luminance__exclusion_exes = [
-	"chrome.exe", "firefox.exe", "msedge.exe", "notepad++.exe", "Everything64.exe", "SystemInformer.exe",
+	"chrome.exe", "firefox.exe", "msedge.exe",
 ]
 
 
 # List of exes for which WinDusky should automatically try to apply color effect as specified
 # If not color effect is specified, the default color effect will be applied
-# each entry must have the 'exe' field, and can optionally specify 'effect'
-# default is to have : "msinfo32.exe", "regedit.exe", "mmc.exe",
-#auto_overlay_exes = [
+# Each entry must have the 'exe' field, and can optionally specify 'effect'
+# The default here, if not using luminance mothod, is to have : "msinfo32.exe", "regedit.exe", "mmc.exe",
+auto_overlay_exes = [
 #    { exe = "mmc.exe" },
 #    { exe = "regedit.exe" },
 #    { exe = "msinfo32.exe" },
-#    { exe = "WinaeroTweaker.exe" },
 #    { exe = "AutoHotkeyUX.exe",  effect = "Simple Inversion" },
-#]
+]
 
 
 # List of Window-classes for which WinDusky should automatically try to apply color effect as specified
 # If no color effect is specified, the default color effect will be applied
 # each entry must have the 'class_name' field, and can optionally specify 'effect', and a list of exe to exclude in 'exe_exclusions'
-# Default is to have only "#32770" which is the window class for all dialog popups that windows generates
-#auto_overlay_window_classes = [
-#    { class_name = "#32770", effect = "default", exclusion_exes = ["notepad++.exe", "SystemInformer.exe"] },
-#]
+# Default (if not using luminance based auto-overlay) is to have only "#32770" which is the window class for all windows dialog popups
+auto_overlay_window_classes = [
+#    {
+#        class_name = "#32770",
+#        effect = "default",
+#        exclusion_exes = ["notepad++.exe", "SystemInformer.exe"]
+#    },
+]
 
 
 
@@ -393,7 +412,7 @@ transform =  [
 
 
 
-# Some more effects not typically intended for inclusion in cycle order, but here for reference,
+# Some more effects not typically intended for inclusion in cycle order, but here for reference:
 
 # Color Blindness Simulation matrices
 # Source: http://web.archive.org/web/20081014161121/http://www.colorjack.com/labs/colormatrix/

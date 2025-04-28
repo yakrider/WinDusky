@@ -165,7 +165,7 @@ fn capture_hwnd (hwnd:Hwnd, use_bitblt: bool) -> Option<(Vec<u8>, i32, i32)> { u
 /// Calculates the average luminance of an hwnd
 pub fn calculate_avg_luminance (hwnd: Hwnd, use_bitblt: bool) -> Option<u8> {
 
-    // PrintWindow is generally preferred as it captures even if obscured etc by asking the window to paint itself to our DC
+    // PrintWindow is generally preferred as it captures even if occluded etc by asking the window to paint itself to our DC
     // BitBlt is faster, but is more likely to capture un-painted hwnds when they first come-up, get-restored etc
 
     //let (buffer, width, height) = capture_hwnd (hwnd, true)?;

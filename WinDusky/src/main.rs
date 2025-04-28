@@ -17,6 +17,7 @@ mod config;
 mod keys;
 mod win_utils;
 mod luminance;
+mod occlusion;
 
 fn main() {
 

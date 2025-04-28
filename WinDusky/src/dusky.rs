@@ -9,23 +9,23 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, FALSE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
+use windows::Win32::Graphics::Gdi::{InvalidateRect, MapWindowPoints, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::Magnification::{MagInitialize, MagSetColorEffect, MagSetWindowSource, MagUninitialize, MAGCOLOREFFECT, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindow, KillTimer, PostMessageW, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowPos, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_SYSTEM_FOREGROUND, GW_HWNDPREV, HCURSOR, HICON, HWND_TOP, HWND_TOPMOST, MSG, OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindow, KillTimer, PostThreadMessageW, RegisterClassExW, SetTimer, SetWindowPos, CS_HREDRAW, CS_VREDRAW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GW_HWNDPREV, HCURSOR, HICON, HWND_TOP, HWND_TOPMOST, MSG, OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WM_APP, WM_HOTKEY, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 use crate::config::{Config, HotKey};
 use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects};
+use crate::occlusion::Rect;
 use crate::rules::{RulesMonitor, RulesResult};
 use crate::win_utils::wide_string;
-use crate::{tray, types::*};
-
+use crate::{tray, types::*, *};
 
 const HOST_WINDOW_CLASS_NAME : &str = "WinDuskyOverlayWindowClass";
 const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host";
@@ -51,15 +51,17 @@ struct Overlay {
     target : Hwnd,
 
     effect : ColorEffectAtomic,
-    marked : Flag,
+
     is_top : Flag,
+    marked : Flag,
+
+    viz_bounds : Option<Rect>
 }
 
 
 
 //#[derive (Debug)]
 pub struct WinDusky {
-
     pub conf    : &'static Config,
     pub rules   : &'static RulesMonitor,
     pub effects : &'static ColorEffects,
@@ -67,8 +69,15 @@ pub struct WinDusky {
     thread_id  : AtomicU32,
     overlays   : RwLock <HashMap <Hwnd, Overlay>>,
     hosts      : RwLock <HashSet <Hwnd>>,
-    cur_timer  : AtomicUsize,
+
     ov_topmost : HwndAtomic,
+    // ^^ which overlay target hwnd (if any) we have cur set topmost
+
+    cur_timer : AtomicUsize,
+    // ^^ OS timer id changes every time we start/stop .. so a ref to cur timer to shut it later
+
+    occl_marked : Flag,
+    // ^^ whether we've been marked to have to refresh overlay occlusion calcs (based on win-events)
 }
 
 
@@ -85,7 +94,7 @@ impl Overlay {
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR::from_raw (wide_string (HOST_WINDOW_CLASS_NAME).as_ptr()),
             PCWSTR::from_raw (wide_string (&format!("{} for {:#x}", HOST_WINDOW_TITLE, target.0)).as_ptr()),
-            WS_POPUP, 0, 0, 0, 0, None, None, h_inst, None
+            WS_POPUP, 0, 0, 0, 0, None, None, h_inst, None,
         ) else {
             return Err (format!("CreateWindowExW (Host) failed with error: {:?}", GetLastError()));
         };
@@ -104,8 +113,9 @@ impl Overlay {
             mag    : mag.into(),
             target,
             effect : ColorEffectAtomic::new (effect),
-            marked : Flag::new(false),
             is_top : Flag::new(false),
+            marked : Flag::new(false),
+            viz_bounds : None,
         };
 
         // we'll apply the default smart inversion color-effect .. can ofc be cycled through via hotkeys later
@@ -131,7 +141,7 @@ impl Overlay {
         let (host, mag, target) = (self.host.into(), self.mag.into(), self.target.into());
 
         //let _ = GetWindowRect (fgnd, &mut rect) .is_err();
-        // ^^ getting window-rect incluedes (often transparent) padding, which we dont want to invert, so we'll use window frame instead
+        // ^^ getting window-rect includes (often transparent) padding, which we dont want to invert, so we'll use window frame instead
         if DwmGetWindowAttribute (target, DWMWA_EXTENDED_FRAME_BOUNDS, &mut rect as *mut RECT as _, size_of::<RECT>() as u32) .is_err() {
             error!( "DwmGetWindowAttribute (frame) on target failed with error: {:?}", GetLastError());
         }
@@ -221,8 +231,10 @@ impl WinDusky {
                 thread_id  : AtomicU32::default(),
                 overlays   : RwLock::new (HashMap::default()),
                 hosts      : RwLock::new (HashSet::default()),
-                cur_timer  : AtomicUsize::default(),
-                ov_topmost : HwndAtomic::default(),
+
+                ov_topmost  : HwndAtomic::default(),
+                cur_timer   : AtomicUsize::default(),
+                occl_marked : Flag::new(true),
             }
         )
         // ^^ NOTE that init is not called here, and the user should do so at their own convenience !!
@@ -293,6 +305,7 @@ impl WinDusky {
         if let Ok(overlay) = Overlay::new (target, effect) {
             if overlays.is_empty() { self.ensure_timer_running() }
             self.hosts.write().unwrap().insert(overlay.host);
+            self.occl_marked.set();
             overlays.insert (target, overlay);
             tray::update_tray__overlay_count (overlays.len());
         }
@@ -308,19 +321,45 @@ impl WinDusky {
             info! ("Removed Overlay from {:?}, tot: {:?}", overlay.target, overlays.len());
         }
         if overlays.is_empty() { self.disable_timer() }
+        self.occl_marked.set();
         tray::update_tray__overlay_count (overlays.len());
     }
 
-    fn update_overlays (&self) {
+    fn update_overlays (&self) { unsafe {
+        if self.occl_marked.is_set() {
+            self.update_viz_bounds();
+        }
         for overlay in self.overlays.read().unwrap().values() {
             if overlay.marked.is_set() {
+                // for marked overlays, we'll update it and invalidate its full rect
                 overlay.update(self);
+                let _ = InvalidateRect (Some (overlay.mag.into()), None, false);
             }
-            let _ = unsafe { InvalidateRect (Some(overlay.mag.into()), None, false) };
-        }
+            else if let Some(bounds) = overlay.viz_bounds {
+                // otherwise we'll invalidate based on prior calculated occlusion bounds (if any)
+                let mag: HWND = overlay.mag.into();
+                let mut lpp = [ POINT {x:bounds.left, y:bounds.top}, POINT {x:bounds.right, y:bounds.bottom} ];
+                if MapWindowPoints (None, Some(mag), &mut lpp) != 0 {
+                    let dirty = RECT { left:lpp[0].x, top:lpp[0].y, right:lpp[1].x, bottom:lpp[1].y };
+                    let _ = InvalidateRect (Some(mag), Some(&dirty), false);
+                }
+        }   }
+    } }
+
+    fn update_viz_bounds (&self) {
+        let targets : Vec<Hwnd> = self.overlays .read().unwrap() .values() .map (|ov| ov.target) .collect();
+        self.occl_marked.clear();
+        if let Ok (bounds_map) = occlusion::calc_viz_bounds (self, &targets) {
+            let mut overlays = self.overlays.write().unwrap();
+            for (target, bounds) in bounds_map .into_iter() {
+                if let Some (overlay) = overlays .get_mut (&target) {
+                    overlay.viz_bounds = bounds;
+                    //tracing::debug! ("{:?} : {:?}", target, bounds);
+                }
+        }   }
     }
 
-    pub(crate) fn clear_overlays (&self) { unsafe {
+    pub fn clear_overlays (&self) {
         let mut overlays = self.overlays.write().unwrap();
         info! ("Clearing all {:?} Color Effect Overlays", overlays.len());
         if overlays.is_empty() {
@@ -329,8 +368,6 @@ impl WinDusky {
         let hwnds : Vec<_> = overlays.keys().copied().collect();
         for hwnd in hwnds {
             if let Some(overlay) = overlays.remove(&hwnd) {
-                let _ = PostMessageW (Some(overlay.host.into()), WM_CLOSE, Default::default(), Default::default());
-                let _ = InvalidateRect (Some(hwnd.into()), None, true);
                 self.hosts.write().unwrap().remove(&overlay.host);
                 self.rules.register_user_unapplied (hwnd);
             }
@@ -338,7 +375,7 @@ impl WinDusky {
         self.ov_topmost.clear();
         self.disable_timer();
         tray::update_tray__overlay_count(0);
-    } }
+    }
 
     fn post_req__overlay_creation (&self, target:Hwnd, effect:ColorEffect) { unsafe {
         let thread_id = self.thread_id.load(Ordering::Relaxed);
@@ -357,6 +394,10 @@ impl WinDusky {
     fn disable_timer (&self) { unsafe {
         let _ = KillTimer (None, self.cur_timer .load(Ordering::Acquire));
     } }
+
+    pub fn get_hosts (&self) -> HashSet<Hwnd> {
+        self.hosts.read().unwrap().clone()
+    }
 
 
     fn handle_auto_overlay (&'static self, hwnd:Hwnd) {
@@ -528,7 +569,9 @@ impl WinDusky {
                 0x8001 : EVENT_OBJECT_DESTROY
                 0x8002 : EVENT_OBJECT_SHOW
                 0x8003 : EVENT_OBJECT_HIDE
+
                 0x800B : EVENT_OBJECT_LOCATIONCHANGE
+                // ^^ needed if want overlay to try keeping sync during window drag .. but will be laggy still
 
                 0x8017 : EVENT_OBJECT_CLOAKED
                 0x8018 : EVENT_OBJECT_UNCLOAKED
@@ -559,30 +602,50 @@ impl WinDusky {
         if self.hosts.read().unwrap().contains(&hwnd) { return }
 
         match event {
+
             EVENT_OBJECT_HIDE | EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {
                 // we treat hidden/closed/cloaked similarly by removing the overlay if there was any
                 if self.overlays .read().unwrap() .contains_key (&hwnd) {
                     self.remove_overlay (hwnd)
                 }
+                self.occl_marked.set();
             }
+
             EVENT_SYSTEM_FOREGROUND => {
-                // If this hwnd already had overlays, we just mark it for udpate and request one
-                if let Some(overlay) = self.overlays .read().unwrap() .get (&hwnd) {
+                // first off, any fgnd change is worth triggering occlusion updates
+                self.occl_marked.set();
+
+                let overlays = self.overlays.read().unwrap();
+
+                // now if this hwnd already had overlays, we just mark it for udpate and request one
+                if let Some(overlay) = overlays .get (&hwnd) {
                     overlay.marked.set();
-                    self.post_req__update();
                     return
                 }
                 // so we got a non-overlain hwnd to fgnd .. so if we had any overlain hwnds on-top, we should clear them
-                if let Some(overlay) = self.overlays.read().unwrap() .get (&self.ov_topmost.load()) {
+                if let Some(overlay) = overlays .get (&self.ov_topmost.load()) {
                     self.ov_topmost.clear();
                     overlay.resync_ov_z_order();
                 }
                 // finally we'll see if auto-overlay rules should apply to this
                 self.handle_auto_overlay (hwnd);
             }
+
+            EVENT_SYSTEM_MINIMIZESTART | EVENT_SYSTEM_MINIMIZEEND | EVENT_SYSTEM_MOVESIZESTART | EVENT_SYSTEM_MOVESIZEEND |
+            EVENT_OBJECT_CREATE | EVENT_OBJECT_SHOW | EVENT_OBJECT_UNCLOAKED | EVENT_OBJECT_LOCATIONCHANGE =>
+            {
+                // for these, we'll mark for occlusion update regardless of whether they were our hwnds
+                self.occl_marked.set();
+
+                if let Some(overlay) = self.overlays .read().unwrap() .get (&hwnd) {
+                    overlay.marked.set();
+                    self.post_req__update();
+                }
+            }
             _ => {
                 // for all other registered events, we only process if hwnd had overlay, and if so we trigger an update
                 if let Some(overlay) = self.overlays .read().unwrap() .get (&hwnd) {
+                    self.occl_marked.set();
                     overlay.marked.set();
                     self.post_req__update();
                 }

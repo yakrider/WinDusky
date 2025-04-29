@@ -1,25 +1,44 @@
 #![allow (dead_code, non_snake_case)]
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::mem::zeroed;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
-use crate::types::Hwnd;
-use std::os::windows::prelude::OsStrExt;
-use windows::core::{BOOL, PSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
+use std::os::windows::prelude::{OsStrExt, OsStringExt};
+use windows::core::{BOOL, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameA, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_NATIVE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, EnumWindows, GetClassNameW, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOPMOST};
 
+use crate::types::Hwnd;
 
 
+
+struct HandleGuard (HANDLE);
+
+impl Drop for HandleGuard {
+    fn drop (&mut self) {
+        if !self.0.is_invalid() {
+            unsafe { let _ = CloseHandle(self.0); }
+        }
+    }
+}
+
+
+#[derive (Debug, Default)]
+pub struct ProcessInfo {
+    pub pid  : u32,
+    pub elev : bool,
+    pub exe  : String,
+}
 
 
 // Helper function to convert Rust string slices to null-terminated UTF-16 Vec<u16>
-pub fn wide_string(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+pub fn wide_string (s: &str) -> Vec<u16> {
+    OsStr::new(s) .encode_wide() .chain (std::iter::once(0)) .collect()
 }
 
 
@@ -40,17 +59,16 @@ pub fn check_window_cloaked (hwnd:Hwnd) -> bool { unsafe {
 
 
 pub fn get_win_title (hwnd:Hwnd) -> String { unsafe {
-    const MAX_LEN : usize = 512;
-    let mut lpstr : [u16; MAX_LEN] = [0; MAX_LEN];
+    let mut lpstr : [u16; 512] = zeroed();
     let copied_len = GetWindowTextW (hwnd.into(), &mut lpstr);
     String::from_utf16_lossy (&lpstr[..(copied_len as _)])
 } }
 
 
 pub fn get_win_class_by_hwnd (hwnd:Hwnd) -> String { unsafe {
-    let mut lpstr: [u16; 120] = [0; 120];
+    let mut lpstr: [u16; 120] = zeroed();
     let len = GetClassNameW (hwnd.into(), &mut lpstr);
-    String::from_utf16_lossy(&lpstr[..(len as _)])
+    String::from_utf16_lossy (&lpstr[..(len as _)])
 } }
 
 
@@ -61,13 +79,12 @@ pub fn get_pid_by_hwnd (hwnd:Hwnd) -> u32 { unsafe {
 } }
 
 pub fn get_exe_by_pid (pid:u32) -> Option<String> { unsafe {
-    let handle = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-    let mut lpstr: [u8; 256] = [0; 256];
-    let mut lpdwsize = 256u32;
-    if handle.is_err() { return None }
-    let _ = QueryFullProcessImageNameA ( HANDLE (handle.as_ref().unwrap().0), PROCESS_NAME_WIN32, PSTR::from_raw(lpstr.as_mut_ptr()), &mut lpdwsize );
-    if let Ok(h) = handle { let _ = CloseHandle(h); }
-    PSTR::from_raw(lpstr.as_mut_ptr()).to_string() .ok() .and_then (|s| s.split("\\").last().map(|s| s.to_string()))
+    let h_proc = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid) .ok()?;
+    let _ph_guard = HandleGuard (h_proc);
+    let mut buf: [u16; MAX_PATH as usize] = zeroed();
+    let mut in_out_len = buf.len() as u32;
+    QueryFullProcessImageNameW (h_proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut in_out_len) .ok() ?;
+    OsString::from_wide (&buf[..in_out_len as _]) .to_string_lossy() .rsplit("\\") .next() .map(|s| s.to_string())
 } }
 
 pub fn get_exe_by_hwnd (hwnd:Hwnd) -> Option<String> {
@@ -80,15 +97,16 @@ pub fn check_cur_proc_elevated () -> Option<bool> {
 }
 pub fn check_hwnd_elevated (hwnd: Hwnd) -> Option<bool> { unsafe {
     let mut pid : u32 = 0;
-    let _ = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
-    let h_proc = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-    h_proc .ok() .and_then (check_proc_elevated)
+    let _thread_id = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
+    if pid == 0 { return None }
+    let h_proc = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid) .ok()?;
+    let _ph_guard = HandleGuard (h_proc);
+    check_proc_elevated (h_proc)
 } }
 pub fn check_proc_elevated (h_proc:HANDLE) -> Option<bool> { unsafe {
     let mut h_token = HANDLE::default();
-    if OpenProcessToken (h_proc, TOKEN_QUERY, &mut h_token) .is_err() {
-        return None;
-    };
+    OpenProcessToken (h_proc, TOKEN_QUERY, &mut h_token) .ok()?;
+    let _token_guard = HandleGuard (h_token);
     let mut token_info : TOKEN_ELEVATION = TOKEN_ELEVATION::default();
     let mut token_info_len = size_of::<TOKEN_ELEVATION>() as u32;
     GetTokenInformation (
@@ -98,6 +116,46 @@ pub fn check_proc_elevated (h_proc:HANDLE) -> Option<bool> { unsafe {
     Some (token_info.TokenIsElevated != 0)
 } }
 
+
+
+
+pub fn get_proc_info (hwnd: Hwnd) -> Option <ProcessInfo> { unsafe {
+
+    let mut pid = 0u32;
+    let _thread_id = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
+    if pid == 0 { return None; }
+
+    let h_proc = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid) .ok() ?;
+    let _ph_guard = HandleGuard (h_proc);
+
+    let mut h_tok : HANDLE = HANDLE::default();
+    OpenProcessToken (h_proc, TOKEN_QUERY, &mut h_tok) .ok()?;
+    let _th_guard = HandleGuard (h_tok);
+
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut return_size: u32 = 0;
+
+    let elev = GetTokenInformation (
+        h_tok, TokenElevation,
+        Some (&mut elevation as *mut _ as *mut std::ffi::c_void),
+        size_of::<TOKEN_ELEVATION>() as u32, &mut return_size,
+    )
+    .ok() .map (|_| elevation.TokenIsElevated != 0) .unwrap_or(false);
+
+    let mut buffer: [u16; MAX_PATH as usize] = zeroed();
+    let mut size = buffer.len() as u32;
+
+    let exe = QueryFullProcessImageNameW (
+        h_proc, PROCESS_NAME_NATIVE, PWSTR(buffer.as_mut_ptr()), &mut size
+    ) .ok() .and_then (|_| {
+        let full_path = OsString::from_wide (&buffer[..size as usize]);
+        full_path .to_string_lossy() .rsplit('\\') .next() .map(|s| s.to_string())
+    } )
+    .unwrap_or ("<error>".to_string());
+
+    Some ( ProcessInfo { pid, elev, exe } )
+
+} }
 
 
 

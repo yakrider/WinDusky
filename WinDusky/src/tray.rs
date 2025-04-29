@@ -47,6 +47,7 @@ pub enum DuskyEvent {
     AutoOverlayEnable (bool),
     OverlayUpdate { n_active : usize },
     OverridesUpdate { n_overrides : usize },
+    FullScreenMode { enabled: bool, effect: Option <&'static str>},
 }
 
 
@@ -54,6 +55,11 @@ static tray_events_proxy : LazyLock <Mutex <Option <EventLoopProxy <DuskyEvent>>
 
 
 /// these will inject an internal event into sys-tray event-loop which will update tray-menu checkboxes etc
+pub fn update_full_screen_mode (enabled:bool, effect: Option <&'static str>) {
+    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+        let _ = proxy.send_event ( DuskyEvent::FullScreenMode {enabled, effect} );
+    }
+}
 pub fn update_auto_overlay_enable (enabled: bool) {
     if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
         let _ = proxy.send_event ( DuskyEvent::AutoOverlayEnable (enabled) );
@@ -75,6 +81,8 @@ const MENU_ELEVATED         : &str = "is_elevated";
 const MENU_AUTO_OV_ENABLED  : &str = "auto_overlay_enabled";
 const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
 const MENU_USER_OVERRIDES   : &str = "user_overrides";
+const MENU_FULL_SCREEN_MODE : &str = "full_screen_mode";
+const MENU_FULL_SCREEN_EFF  : &str = "full_screen_effect";
 const MENU_EDIT_CONF        : &str = "edit_conf";
 const MENU_RESET_CONF       : &str = "reset_conf";
 const MENU_RESTART          : &str = "restart";
@@ -87,6 +95,8 @@ fn menu_disp_str (id:&str) -> &str {
         MENU_AUTO_OV_ENABLED  => "Auto Overlay Enabled",
         MENU_ACTIVE_OVERLAYS  => "Overlays : 0",
         MENU_USER_OVERRIDES   => "User Overrides : 0",
+        MENU_FULL_SCREEN_MODE => "Enable Full Screen Mode",
+        MENU_FULL_SCREEN_EFF  => "(Effect: None)",
         MENU_EDIT_CONF        => "Edit Config",
         MENU_RESET_CONF       => "Reset Config",
         MENU_RESTART          => "Restart",
@@ -96,18 +106,26 @@ fn menu_disp_str (id:&str) -> &str {
 }
 
 fn exec_menu_action (id: &str) {
+
+    // Reminder that since tray runs in a separate thread, direct actions to dusky host/mag hwnds cant be triggered from here!!
+    // .. ie all that has to go via posting messages to dusky thread msg queue
+
     let wd = WinDusky::instance();
+
     match id {
       //MENU_ELEVATED         => { /* always disabled */ },
-        MENU_AUTO_OV_ENABLED  => { update_auto_overlay_enable (wd.rules.toggle_auto_overlay_enabled()) }
-        MENU_ACTIVE_OVERLAYS  => { wd.clear_overlays() }
-        MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides() }
-        MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit() }
-        MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset() }
-        MENU_RESTART          => { handle_restart_request(wd) }
-        MENU_QUIT             => { wd.post_req__quit() }
+        MENU_AUTO_OV_ENABLED  => { wd.rules.toggle_auto_overlay_enabled(); }
+        MENU_ACTIVE_OVERLAYS  => { wd.post_req__overlay_clear_all(); }
+        MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides(); }
+        MENU_FULL_SCREEN_MODE => { wd.post_req__toggle_fs_mode(); }
+        MENU_FULL_SCREEN_EFF  => { wd.post_req__toggle_fs_eff(); }
+        MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit(); }
+        MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset(); }
+        MENU_RESTART          => { handle_restart_request(wd); }
+        MENU_QUIT             => { wd.post_req__quit(); }
         _ => { }
     };
+
 }
 
 
@@ -121,12 +139,15 @@ pub fn start_system_tray_monitor() {
 
     let is_elev = crate::win_utils::check_cur_proc_elevated().unwrap_or_default();
     let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
-    let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, true, None);
+    let elevated = CheckMenuItem::with_id (MENU_ELEVATED, elev_str, false, is_elev, None);
 
-    let auto_ov_enabled = make_menu_check (MENU_AUTO_OV_ENABLED, true, true);
+    let auto_ov_enabled  = make_menu_check (MENU_AUTO_OV_ENABLED, true, true);
 
     let active    = make_menu_check (MENU_ACTIVE_OVERLAYS, true, false);
     let overrides = make_menu_check (MENU_USER_OVERRIDES, true, false);
+
+    let full_screen_mode = make_menu_check (MENU_FULL_SCREEN_MODE, true, false);
+    let full_screen_eff  = make_menu_check (MENU_FULL_SCREEN_EFF, false, false);
 
     let edit_conf  = make_menu_item (MENU_EDIT_CONF, true);
     let reset_conf = make_menu_item (MENU_RESET_CONF, true);
@@ -138,8 +159,9 @@ pub fn start_system_tray_monitor() {
 
     let tray_menu = Menu::new();
     tray_menu .append_items ( &[
-        &elevated, &auto_ov_enabled, &sep,
-        &active, &overrides, &sep,
+        &elevated, &sep,
+        &auto_ov_enabled, &active, &overrides, &sep,
+        &full_screen_mode, &full_screen_eff, &sep,
         &edit_conf ,&reset_conf, &sep,
         &restart, &quit
     ] );
@@ -179,18 +201,28 @@ pub fn start_system_tray_monitor() {
     let events_handler = move |event: DuskyEvent| {
         //tracing::debug!("{event:?}");
         match event {
+            DuskyEvent::MenuAction (event) => {
+                exec_menu_action (&event.id.0);
+            }
             DuskyEvent::OverlayUpdate { n_active } => {
                 update_active_counts (n_active, &active);
             }
             DuskyEvent::OverridesUpdate { n_overrides } => {
                 update_overrides_counts (n_overrides, &overrides);
             }
-            DuskyEvent::MenuAction (event) => {
-                exec_menu_action (&event.id.0);
-            }
             DuskyEvent::AutoOverlayEnable (enabled) => {
                 auto_ov_enabled.set_checked (enabled);
                 auto_ov_enabled.set_text (if enabled {"Auto Overlay Enabled"} else {"Enable Auto Overlay"})
+            }
+            DuskyEvent::FullScreenMode {enabled, effect} => {
+                full_screen_mode.set_checked (enabled);
+                full_screen_eff .set_enabled (enabled);
+                full_screen_eff .set_checked (effect.is_some());
+                full_screen_eff .set_text (format! ("(Effect: {:?})", effect.unwrap_or("None")));
+                full_screen_mode.set_text (if enabled {"Full Screen Mode"} else {"Enable Full Screen Mode"});
+                for menu in [&auto_ov_enabled, &active, &overrides] {
+                    menu.set_enabled (!enabled)
+                }
             }
         }
     };

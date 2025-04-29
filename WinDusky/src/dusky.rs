@@ -16,21 +16,23 @@ use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, Kil
 
 use crate::config::Config;
 use crate::effects::{ColorEffect, ColorEffects};
-use overlay::Overlay;
 use crate::rules::{RulesMonitor, RulesResult};
 use crate::{tray, types::*, *};
-
 
 mod overlay;
 mod hooks;
 mod hotkeys;
 
+use overlay::{FullScreenOverlay, Overlay};
 
 const TIMER_TICK_MS : u32 = 16;
 
-const WM_APP__REQ_REFRESH         : u32 = WM_APP + 1;
-const WM_APP__REQ_CREATE_OVERLAY  : u32 = WM_APP + 2;
-const WM_APP__UN_REGISTER_HOTEKYS : u32 = WM_APP + 3;
+const WM_APP__REQ_REFRESH                : u32 = WM_APP + 1;
+const WM_APP__REQ_OVERLAY_CREATE         : u32 = WM_APP + 2;
+const WM_APP__REQ_OVERLAY_CLEAR_ALL      : u32 = WM_APP + 3;
+const WM_APP__UN_REGISTER_HOTEKYS        : u32 = WM_APP + 4;
+const WM_APP__REQ_TOGGLE_FULLSCREEN_MODE : u32 = WM_APP + 5;
+const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF  : u32 = WM_APP + 6;
 
 
 
@@ -40,6 +42,8 @@ pub struct WinDusky {
     pub conf    : &'static Config,
     pub rules   : &'static RulesMonitor,
     pub effects : &'static ColorEffects,
+
+    fs_overlay : &'static FullScreenOverlay,
 
     thread_id : AtomicU32,
     overlays  : RwLock <HashMap <Hwnd, Overlay>>,
@@ -60,6 +64,10 @@ pub struct WinDusky {
 
 impl WinDusky {
 
+    // Reminder that actions on hwnds (e.g. deletion) only have effect when called from the owning thread !!
+    // .. so such actions must be posted to our msg queue here (rather than directly exposed as pub fns)
+    // (Note however, that handlers for hotkeys registered from here, or hooks set here, are still in our thread context !!)
+
     pub fn instance() -> &'static WinDusky {
         static INSTANCE : OnceLock <WinDusky> = OnceLock::new();
         INSTANCE .get_or_init ( ||
@@ -68,9 +76,11 @@ impl WinDusky {
                 rules   : RulesMonitor::instance(),
                 effects : ColorEffects::instance(),
 
-                thread_id  : AtomicU32::default(),
-                overlays   : RwLock::new (HashMap::default()),
-                hosts      : RwLock::new (HashSet::default()),
+                fs_overlay : FullScreenOverlay::instance(),
+
+                thread_id : AtomicU32::default(),
+                overlays  : RwLock::new (HashMap::default()),
+                hosts     : RwLock::new (HashSet::default()),
 
                 ov_topmost  : HwndAtomic::default(),
                 cur_timer   : AtomicUsize::default(),
@@ -79,6 +89,7 @@ impl WinDusky {
         )
         // ^^ NOTE that init is not called here, and the user should do so at their own convenience !!
     }
+
 
 
     pub fn start_overlay_manager (&self) -> Result<(), String> { unsafe {
@@ -99,7 +110,9 @@ impl WinDusky {
 
         self.conf.check_dusky_conf_version_match();
 
+        // our defaults come from confs, so we'll want to load those defaults into our defaults !!
         self.effects.load_effects_from_conf (self.conf);
+        self.fs_overlay.effect.store (self.effects.get_default());
 
         self.rules.load_conf_rules (self.conf, self.effects);
 
@@ -116,33 +129,77 @@ impl WinDusky {
                 let _ = MagUninitialize();
                 return Err (format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
-            else if msg.message == WM_TIMER || msg.message == WM_APP__REQ_REFRESH {
-                self.refresh_overlays();
-            }
-            else if msg.message == WM_HOTKEY {
-                self.handle_hotkeys (msg.wParam.0);
-            }
-            else if msg.message == WM_APP__REQ_CREATE_OVERLAY {
-                self.create_overlay ( Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _) );
-            }
-            else if msg.message == WM_APP__UN_REGISTER_HOTEKYS {
-                self.un_register_hotkeys();
-            }
-            else if msg.message == WM_DESTROY {
-                warn! ("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
-                PostQuitMessage(0);
-            }
-            else {
-                //let _ = TranslateMessage(&msg);
-                // ^^ not needed as we dont do any gui w text etc
-                DispatchMessageW(&msg);
+            match msg.message {
+                WM_TIMER | WM_APP__REQ_REFRESH => {
+                    self.refresh_overlays();
+                }
+                WM_HOTKEY => {
+                    self.handle_hotkeys (msg.wParam.0);
+                }
+                WM_APP__REQ_TOGGLE_FULLSCREEN_MODE => {
+                    self.toggle_full_screen_mode();
+                }
+                WM_APP__REQ_TOGGLE_FULLSCREEN_EFF => {
+                    let eff = self.fs_overlay.toggle_effect();
+                    tray::update_full_screen_mode (self.fs_overlay.enabled.is_set(), eff.map (|e| e.name()));
+                }
+                WM_APP__REQ_OVERLAY_CREATE => {
+                    self.create_overlay (Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _));
+                }
+                WM_APP__REQ_OVERLAY_CLEAR_ALL => {
+                    self.clear_overlays();
+                }
+                WM_APP__UN_REGISTER_HOTEKYS => {
+                    self.un_register_hotkeys();
+                }
+                WM_DESTROY => {
+                    warn!("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
+                    let _ = MagUninitialize();
+                    PostQuitMessage(0);
+                }
+                _ => { DispatchMessageW(&msg); }
             }
         }
 
     } }
 
 
-    pub(crate) fn create_overlay (&self, target:Hwnd, effect:ColorEffect) {
+
+    fn check_fs_mode (&self) -> bool {
+        self.fs_overlay.enabled.is_set()
+    }
+    fn toggle_full_screen_mode (&self) -> bool {
+        // Note that this to toggle the ENABLED state .. not to toggle overlay alone
+        // When toggling on, it does apply overlay, and when toggling off, it does remove it..
+        // .. however, once can unapply the overlay (e.g. via hotkey) w/o toggling the mode off too!
+        let enabled = self.fs_overlay.toggle();
+        self.set_full_screen_mode (enabled);
+        enabled
+    }
+    fn set_full_screen_mode (&self, enabled:bool) {
+        self.fs_overlay.set_enabled(enabled);
+        if enabled {
+            // we gotta clear out per-hwnd overlays upon entering full-screen mode
+            // Note that since this could be called from other threads (e.g tray), we must post message
+            // (as hwnds can only be destroyed from the threads that called them)
+            self.post_req__overlay_clear_all();
+            self.rules.clear_user_overrides();
+        }
+        //else {}  // <- if we jsut toggled off fs-mode .. thats it, nothing more to do
+
+        let effect = if !enabled { None } else {
+            Some (ColorEffect::from (&self.fs_overlay.effect) .name())
+        };
+        tray::update_full_screen_mode (enabled, effect);
+    }
+
+
+    fn create_overlay (&self, target:Hwnd, effect:ColorEffect) {
+        // Warning : This should only be called from overlay-manager thread
+        if !target.is_valid() {
+            warn! ("~~ WARNING ~~ Overlay creation request for {:?} .. Ingoring", &target);
+            return
+        }
         let mut overlays = self.overlays.write().unwrap();
         if overlays .contains_key (&target) {
             warn! ("Ignoring overlay creation request for {:?} .. Overlay already exists!!", &target);
@@ -158,11 +215,12 @@ impl WinDusky {
         info! ("Created Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
     }
 
-    pub(crate) fn remove_overlay (&self, target:Hwnd) {
+    fn remove_overlay (&self, target:Hwnd) {
+        // Warning : This should only be called from overlay-manager thread
         let mut overlays = self.overlays.write().unwrap();
         if let Some(overlay) = overlays.remove (&target) {
-            // ^^ the returned value is dropped and so its hwnds will get cleaned up
-            self.hosts.write().unwrap().remove(&overlay.host);
+            overlay.destroy();
+            self.hosts.write().unwrap().remove (&overlay.host);
             if overlay.target == self.ov_topmost.load() { self.ov_topmost.clear(); }
             info! ("Removed Overlay from {:?}, tot: {:?}", overlay.target, overlays.len());
         }
@@ -193,40 +251,39 @@ impl WinDusky {
         }   }
     }
 
-    pub fn clear_overlays (&self) {
+    fn clear_overlays (&self) {
+        // Reminder that this MUST be called from overlay-manager thread to have effect on overlay hwnds
         let mut overlays = self.overlays.write().unwrap();
         info! ("Clearing all {:?} Color Effect Overlays", overlays.len());
-        if overlays.is_empty() {
-            return
-        }
+
         let hwnds : Vec<_> = overlays.keys().copied().collect();
         for hwnd in hwnds {
             if let Some(overlay) = overlays.remove(&hwnd) {
+                overlay.destroy();
                 self.hosts.write().unwrap().remove(&overlay.host);
-                self.rules.register_user_unapplied (hwnd);
             }
         }
         self.ov_topmost.clear();
         self.disable_timer();
         tray::update_tray__overlay_count(0);
+        self.rules.clear_user_overrides();
     }
 
 
-    pub fn post_req__overlay_creation (&self, target:Hwnd, effect:ColorEffect) { unsafe {
+    fn post_simple_req (&self, msg:u32) { unsafe {
         let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_CREATE_OVERLAY, WPARAM (target.0 as _), LPARAM (effect.0 as _));
+        let _ = PostThreadMessageW (thread_id, msg, WPARAM(0), LPARAM(0));
     } }
-    pub fn post_req__refresh (&self) { unsafe {
+    pub fn post_req__toggle_fs_mode      (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_MODE) }
+    pub fn post_req__toggle_fs_eff       (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_EFF) }
+    pub fn post_req__refresh             (&self) { self.post_simple_req (WM_APP__REQ_REFRESH) }
+    pub fn post_req__overlay_clear_all   (&self) { self.post_simple_req (WM_APP__REQ_OVERLAY_CLEAR_ALL) }
+    pub fn post_req__un_register_hotkeys (&self) { self.post_simple_req (WM_APP__UN_REGISTER_HOTEKYS) }
+    pub fn post_req__quit                (&self) { self.post_simple_req (WM_DESTROY) }
+
+    pub fn post_req__overlay_create (&self, target:Hwnd, effect:ColorEffect) { unsafe {
         let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_REFRESH, WPARAM(0), LPARAM(0));
-    } }
-    pub fn post_req__un_register_hotkeys (&self) { unsafe {
-        let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, WM_APP__UN_REGISTER_HOTEKYS, WPARAM(0), LPARAM(0));
-    } }
-    pub fn post_req__quit (&self) { unsafe {
-        let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, WM_DESTROY, WPARAM(0), LPARAM(0));
+        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_OVERLAY_CREATE, WPARAM (target.0 as _), LPARAM (effect.0 as _));
     } }
 
 
@@ -249,6 +306,7 @@ impl WinDusky {
 
         // So we got an hwnd that doesnt have overlay yet, and we wanna see if auto-overlay rules apply to it
 
+        if self.check_fs_mode() { return }
         if !self.rules.check_auto_overlay_enabled() { return }
 
         // next we'll check if we have have evaluated auto-overlay rules for this previously
@@ -258,7 +316,7 @@ impl WinDusky {
             return;
         }
         else if let Some ( RulesResult { enabled: true, effect, ..} ) = result {
-            self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
+            self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
             return
         }
 
@@ -281,7 +339,7 @@ impl WinDusky {
 
             // otherwise, if it passed rules, we can go ahead and request an overlay creation
             if let RulesResult { enabled: true, effect, .. } = result {
-                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
+                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
             }
 
             // however, as seen before, it takes time for some windows to get all their properties after newly created hwnds report fgnd
@@ -292,14 +350,14 @@ impl WinDusky {
 
             if self.overlays.read().unwrap().contains_key(&hwnd) { return }
             if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()));
+                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
             }
 
             thread::sleep (Duration::from_millis(500));
 
             if self.overlays.read().unwrap().contains_key(&hwnd) { return }
             if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_creation (hwnd, effect.unwrap_or (self.effects.get_default()))
+                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()))
             }
 
         } );

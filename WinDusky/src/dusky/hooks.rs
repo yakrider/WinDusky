@@ -9,7 +9,6 @@ use crate::types::Hwnd;
 
 impl WinDusky {
 
-
     pub(super) fn setup_win_hooks (&self) { unsafe {
 
         // Note this this must be called from some thread that will be monitoring its msg queue
@@ -50,7 +49,7 @@ impl WinDusky {
     } }
 
 
-    pub(super) fn handle_win_hook_event (&'static self, hwnd:Hwnd, event:u32) {
+    fn handle_win_hook_event (&'static self, hwnd:Hwnd, event:u32) {
         use windows::Win32::UI::WindowsAndMessaging::*;
 
         // Note, only hwnd level events make it this far (child or non-window-obj events are filtered out)
@@ -64,6 +63,10 @@ impl WinDusky {
 
         // first off, lets ignore our own overlay hosts
         if self.hosts.read().unwrap() .contains (&hwnd) { return }
+
+        // in full screen mode, there are no events that require any response
+        if self.check_fs_mode() { return }
+        // ^^ todo .. could prob just turn unhook events when toggling full-screen mode
 
         match event {
 
@@ -117,9 +120,8 @@ impl WinDusky {
         }
     }
 
-
-
 }
+
 
 
 

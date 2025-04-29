@@ -98,6 +98,7 @@ impl RulesMonitor {
         INSTANCE .get_or_init ( ||
             RulesMonitor {
                 elevated : Flag::new (check_cur_proc_elevated().unwrap_or_default()),
+
                 auto_overlay_enabled : Flag::new (true),
 
                 auto_overlay_lum__thresh     : AtomicU8::default(),
@@ -150,13 +151,19 @@ impl RulesMonitor {
         }
         info! ("The following auto-overlay rules were loaded :");
         rules .iter() .sorted_by_key (|t| t.0) .enumerate() .for_each (|(i,t)| info!("{:?}.{:?}", i+1, t));
+
+        self.auto_overlay_enabled .store (
+            self.auto_overlay_lum__thresh .load (Ordering::Relaxed) > 0  ||  !self.rules.borrow().is_empty()
+        );
     }
 
     pub fn check_auto_overlay_enabled (&self) -> bool {
         self.auto_overlay_enabled.is_set()
     }
     pub fn toggle_auto_overlay_enabled (&self) -> bool {
-        ! self.auto_overlay_enabled.toggle()
+        let enabled = !self.auto_overlay_enabled.toggle();
+        tray::update_auto_overlay_enable (enabled);
+        enabled
     }
 
     pub fn get_auto_overlay_delay_ms (&self) -> u32 {
@@ -213,11 +220,13 @@ impl RulesMonitor {
         if !check_window_visible(hwnd) || check_window_cloaked(hwnd) {
             return *effect_none
         }
-        let elev_excl = self.elevated.is_clear() && check_hwnd_elevated(hwnd).unwrap_or_default();
+        let Some(info) = get_proc_info(hwnd) else {
+            return *effect_none
+        };
 
-        let exe = get_exe_by_hwnd(hwnd);
+        let elev_excl = self.elevated.is_clear() && info.elev;
 
-        if !self.auto_overlay_lum__excl_exes .borrow() .contains (exe.as_ref().unwrap()) {
+        if !self.auto_overlay_lum__excl_exes .borrow() .contains (&info.exe) {
             let lum_thresh = self.auto_overlay_lum__thresh .load (Ordering::Relaxed);
             if lum_thresh > 0 {
                 if let Some (lum) = calculate_avg_luminance (hwnd, self.auto_overlay_lum__use_bitblt .is_set()) {
@@ -235,16 +244,14 @@ impl RulesMonitor {
         let class = get_win_class_by_hwnd (hwnd);
 
         if let Some(result) = self.rules.borrow() .get (& RulesKey::Rule_ClassId (class)) {
-            if exe.is_some() && result.excl_exes.as_ref().is_some_and (|h| h.contains(&exe.unwrap())) {
+            if result.excl_exes.as_ref().is_some_and (|h| h.contains(&info.exe)) {
                 return *effect_none
             }
             return RulesResult { elev_excl, ..result.into() };
         }
 
-        if let Some(exe) = get_exe_by_hwnd(hwnd) {
-            if let Some(result) = self.rules.borrow() .get (& RulesKey::Rule_Exe(exe)) {
-                return RulesResult { elev_excl, ..result.into() };
-            }
+        if let Some(result) = self.rules.borrow() .get (& RulesKey::Rule_Exe (info.exe)) {
+            return RulesResult { elev_excl, ..result.into() };
         }
 
         *effect_none

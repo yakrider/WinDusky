@@ -14,7 +14,7 @@
 
 # WinDusky conf version string .. this is used to check compatibility and print warnings/errors
 # Upon upgrading the application, and updating any user configs here as desired, can update this version string to remove warning printouts
-dusky_conf_version = 0.17
+dusky_conf_version = 0.18
 
 
 
@@ -25,7 +25,6 @@ logging_enabled = true
 
 # Level of logging (if enabled) .. default is "INFO" .. options are "DEBUG", "INFO", "WARN", "ERROR"
 logging_level = "INFO"
-
 
 
 
@@ -41,22 +40,23 @@ logging_level = "INFO"
 hotkey__dusky_toggle = { key = "I", modifiers = ["Alt", "Win"] }
 
 
+# Hotkey to toggle dusky color effect mode to 'FullScreen' rather than per window
+# The default is "Alt+Win+Shift+I" .. specified as { key = "I", modifiers = ["Alt", "Win", "Shift"] }
+hotkey__fullscreeen_toggle = { key = "I", modifiers = ["Alt", "Win", "Shift"] }
+
+
 # Hotkeys to cycle through (next and previous) color-effects in the color-effects list
 # The defaults are Alt+Win+Period for Next, and Alt+Win+Comma for Previous effect
 hotkey__next_effect = { key = "Period", modifiers = ["Alt", "Win"] }
 hotkey__prev_effect = { key = "Comma",  modifiers = ["Alt", "Win"] }
 
 
-# Hotkey to clear all active overlays
-# Once cleared, the windows are also remmebered as rules overrides such that auto-overlay rules wont apply to them this ssession
-hotkey__clear_overlays = { key = "F12", modifiers = ["Alt", "Win"] }
-
 # Hotkey to clear all user toggling performed on overlays, including overrides to any auto-applied overlays
 # Clearing these means auto-overlay rules can reapply to windows when they come to foreground next
 hotkey__clear_overrides = { key = "Insert", modifiers = ["Alt", "Win"] }
 
-# Hotkey to clear overlays, and also clear all user overrides
-hotkey__clear_all = { key = "Delete", modifiers = ["Alt", "Win"] }
+# Hotkey to clear all active overlays (will also clear all user overrides)
+hotkey__clear_overlays = { key = "Delete", modifiers = ["Alt", "Win"] }
 
 
 
@@ -129,12 +129,12 @@ auto_overlay_window_classes = [
 
 
 
-
 # --- Color Effects Configuration ---
 
 # List of effect names defining the order for cycling (using Alt+Win+Period/Comma)
 # Names must match the keys defined in the [color_effects] table below.
 # Users can reorder, add, or remove names from this list (as long as they exist in [effects] table).
+# Credit for many of these: https://github.com/mlaily/NegativeScreen
 effects_cycle_order = [
 
     "Simple Inversion",

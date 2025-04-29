@@ -1,18 +1,23 @@
+use std::sync::OnceLock;
 use crate::dusky::WinDusky;
-use crate::effects::{ColorEffect, ColorEffectAtomic};
+use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects, COLOR_EFF__IDENTITY};
 use crate::occlusion::Rect;
 use crate::types::{Flag, Hwnd};
 use crate::win_utils::wide_string;
-use tracing::error;
+use tracing::{error, info};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, MapWindowPoints, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Magnification::{MagSetColorEffect, MagSetWindowSource, MAGCOLOREFFECT, WC_MAGNIFIERW};
+use windows::Win32::UI::Magnification::{MagSetColorEffect, MagSetFullscreenColorEffect, MagSetWindowSource, MAGCOLOREFFECT, WC_MAGNIFIERW};
 use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, GetWindow, RegisterClassExW, SetWindowPos, CS_HREDRAW, CS_VREDRAW, GW_HWNDPREV, HCURSOR, HICON, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
 
 
+
+
+//  ~~~ Thread Affinity Reminder ~~~
+// .. The way Mag-API works, calls for setting color effect etc must be made from SAME thread that called MagInitialize !!
 
 
 
@@ -53,8 +58,15 @@ pub unsafe fn register_overlay_class () -> Result <(), String> {
 
 
 
+#[derive (Debug, Default)]
+pub struct FullScreenOverlay {
+    pub enabled : Flag,
+    pub active  : Flag,
+    pub effect  : ColorEffectAtomic,
+}
 
-#[derive (Default, Debug)]
+
+#[derive (Debug, Default)]
 pub struct Overlay {
     pub host   : Hwnd,
     pub mag    : Hwnd,
@@ -70,17 +82,81 @@ pub struct Overlay {
 
 
 
-impl Drop for Overlay {
-    fn drop (&mut self) { unsafe {
-        let _ = DestroyWindow (self.host.into());
-    } }
-}
+impl FullScreenOverlay {
 
+    pub(super) fn instance() -> &'static FullScreenOverlay {
+        static INSTANCE : OnceLock <FullScreenOverlay> = OnceLock::new();
+        INSTANCE .get_or_init ( ||
+            FullScreenOverlay {
+                enabled : Flag::default(),
+                active  : Flag::default(),
+                effect  : ColorEffectAtomic::new (ColorEffects::instance().get_default()),
+            }
+        )
+    }
+
+    /// toggles full screen effect enabled state and returns the updated state
+    pub(super) fn toggle (&self) -> bool {
+        let enabled = !self.enabled.toggle();
+        self.active .store (enabled);
+        info! ("Setting FULL-SCREEN_OVERLAY mode to : {} !!", if enabled {"ON"} else {"OFF"} );
+        self.apply_color_effect ( if enabled { self.effect.get() } else { COLOR_EFF__IDENTITY } );
+        enabled
+    }
+    pub(super) fn set_enabled (&self, enabled: bool) {
+        let prior = self.enabled.swap(enabled);
+        self.active .store (enabled);
+        if prior != enabled {
+            info! ("Setting FULL-SCREEN_OVERLAY mode to : {} !!", if enabled {"ON"} else {"OFF"} );
+            self.apply_color_effect ( if enabled { self.effect.get() } else { COLOR_EFF__IDENTITY } );
+        }
+    }
+
+    /// toggles the effect applied full screen (does not affect the enabled state itself!)
+    pub(super) fn toggle_effect (&self) -> Option<ColorEffect> {
+        if self.active.is_set() {
+            self.unapply_effect();
+            return None
+        }
+        Some (self.apply_effect_cycled (None))
+    }
+    pub(super) fn apply_effect_next (&self) -> Option<ColorEffect> {
+        if self.active.is_clear() { return None }
+        Some ( self.apply_effect_cycled (Some(true)))
+    }
+    pub(super) fn apply_effect_prev (&self) -> Option<ColorEffect> {
+        if self.active.is_clear() { return None }
+        Some (self.apply_effect_cycled (Some(false)))
+    }
+
+    pub(super) fn unapply_effect (&self) {
+        self.active.clear();
+        info! ("Clearing Full Screen Overlay color effect .. (the mode remains active)!");
+        self.apply_color_effect (COLOR_EFF__IDENTITY);
+    }
+
+    fn apply_color_effect (&self, effect: MAGCOLOREFFECT) { unsafe {
+        if ! MagSetFullscreenColorEffect (&effect as *const _ as _) .as_bool() {
+            error! ("Error settting Fullscreen Color Effect : {:?}", GetLastError());
+        }
+    } }
+    fn apply_effect_cycled (&self, forward: Option<bool>) -> ColorEffect {
+        let effect = if let Some(forward) = forward { self.effect.cycle (forward) } else { (&self.effect).into() };
+        info! ("Setting Full Screen Overlay Color Effect to : {:?}", effect);
+        self.apply_color_effect (effect.get());
+        self.active.set();
+        effect
+    }
+
+}
 
 
 impl Overlay {
 
-    pub fn new (target:Hwnd, effect:ColorEffect) -> Result <Overlay, String> { unsafe {
+    // Reminder : Windows created by one thread can only be removed by the same thread
+    // .. hence all calls to here are best made from some single Overlay-Manager thread
+
+    pub(super) fn new (target:Hwnd, effect:ColorEffect) -> Result <Overlay, String> { unsafe {
 
         let h_inst : Option<HINSTANCE> = GetModuleHandleW(None) .ok() .map(|h| h.into());
 
@@ -138,7 +214,7 @@ impl Overlay {
         //let _ = GetWindowRect (fgnd, &mut rect) .is_err();
         // ^^ getting window-rect includes (often transparent) padding, which we dont want to invert, so we'll use window frame instead
         if DwmGetWindowAttribute (target, DWMWA_EXTENDED_FRAME_BOUNDS, &mut rect as *mut RECT as _, size_of::<RECT>() as u32) .is_err() {
-            error!( "DwmGetWindowAttribute (frame) on target failed with error: {:?}", GetLastError());
+            error!( "@ {:?} update: DwmGetWindowAttribute (frame) failed with error: {:?}", target, GetLastError());
         }
         let (x, y, w, h) = (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
 
@@ -187,7 +263,7 @@ impl Overlay {
     } }
 
 
-    pub fn refresh (&self, wd: &WinDusky) { unsafe {
+    pub(super) fn refresh (&self, wd: &WinDusky) { unsafe {
         if self.marked.is_set() {
             // if we were marked for update, we'll update then invalidate our full rect
             self.update(wd);
@@ -204,8 +280,13 @@ impl Overlay {
         }
     } }
 
+    pub(super) fn destroy (&self) { unsafe {
+        info! ("Clearing overlay for {:?}", self.target);
+        let _ = DestroyWindow (self.host.into());
+    } }
 
-    pub fn resync_ov_z_order (&self) { unsafe {
+
+    pub(super) fn resync_ov_z_order (&self) { unsafe {
         self.is_top.clear();
         let hwnd_insert = GetWindow (self.target.into(), GW_HWNDPREV) .unwrap_or(HWND_TOP);
         let _ = SetWindowPos (self.host.into(), Some(hwnd_insert),  0, 0, 0, 0,  SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE);
@@ -222,8 +303,8 @@ impl Overlay {
         self.apply_color_effect (effect.get());
         effect
     }
-    pub fn apply_effect_next (&self) -> ColorEffect { self.apply_effect_cycled (true) }
-    pub fn apply_effect_prev (&self) -> ColorEffect { self.apply_effect_cycled (false) }
+    pub(super) fn apply_effect_next (&self) -> ColorEffect { self.apply_effect_cycled (true) }
+    pub(super) fn apply_effect_prev (&self) -> ColorEffect { self.apply_effect_cycled (false) }
 
 }
 

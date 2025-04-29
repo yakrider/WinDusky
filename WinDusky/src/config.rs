@@ -329,12 +329,13 @@ impl Config {
 
     pub fn get_hotkey__dusky_toggle (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__dusky_toggle") }
 
+    pub fn get_hotkey__fullscreen_toggle (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__fullscreeen_toggle") }
+
     pub fn get_hotkey__next_effect  (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__next_effect") }
     pub fn get_hotkey__prev_effect  (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__prev_effect") }
 
     pub fn get_hotkey__clear_overlays  (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overlays") }
     pub fn get_hotkey__clear_overrides (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overrides") }
-    pub fn get_hotkey__clear_all       (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_all") }
 
 
 

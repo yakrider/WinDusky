@@ -1,27 +1,39 @@
 
 #![allow (unused, non_snake_case, non_upper_case_globals)]
 
-use std::io::Cursor;
-use std::sync::{LazyLock, Mutex};
-
 use image::{ImageFormat, ImageReader};
+
+use std::io::Cursor;
+use std::os::windows::process::CommandExt;
+use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::windows::EventLoopBuilderExtWindows;
 
+use tracing::{error, warn};
+
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
+
+use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
 
 use crate::dusky::WinDusky;
 
 
+
+
 const ICON_BYTES: &[u8] = include_bytes!("../WinDusky_128.png");
+
 
 fn get_dusky_icon() -> Icon {
     let icon = ImageReader::with_format (Cursor::new (ICON_BYTES.to_vec()), ImageFormat::Png).decode().unwrap();
     Icon::from_rgba (icon.into_bytes(), 128, 128).unwrap()
 }
+
 
 
 // We'd like to have a way to update the tray menu entries upon internal events ..
@@ -65,7 +77,9 @@ const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
 const MENU_USER_OVERRIDES   : &str = "user_overrides";
 const MENU_EDIT_CONF        : &str = "edit_conf";
 const MENU_RESET_CONF       : &str = "reset_conf";
+const MENU_RESTART          : &str = "restart";
 const MENU_QUIT             : &str = "quit";
+
 
 fn menu_disp_str (id:&str) -> &str {
     match id {
@@ -75,22 +89,29 @@ fn menu_disp_str (id:&str) -> &str {
         MENU_USER_OVERRIDES   => "User Overrides : 0",
         MENU_EDIT_CONF        => "Edit Config",
         MENU_RESET_CONF       => "Reset Config",
+        MENU_RESTART          => "Restart",
         MENU_QUIT             => "Quit",
         _ => "",
     }
 }
-fn exec_menu_action (id: &str, wd: &WinDusky) {
+
+fn exec_menu_action (id: &str) {
+    let wd = WinDusky::instance();
     match id {
       //MENU_ELEVATED         => { /* always disabled */ },
-        MENU_AUTO_OV_ENABLED  => { update_auto_overlay_enable (wd.rules.toggle_auto_overlay_enabled());  }
+        MENU_AUTO_OV_ENABLED  => { update_auto_overlay_enable (wd.rules.toggle_auto_overlay_enabled()) }
         MENU_ACTIVE_OVERLAYS  => { wd.clear_overlays() }
         MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides() }
         MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit() }
         MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset() }
-        MENU_QUIT             => { std::process::exit(0) }
+        MENU_RESTART          => { handle_restart_request(wd) }
+        MENU_QUIT             => { wd.post_req__quit() }
         _ => { }
-    }
+    };
 }
+
+
+
 
 
 pub fn start_system_tray_monitor() {
@@ -110,12 +131,18 @@ pub fn start_system_tray_monitor() {
     let edit_conf  = make_menu_item (MENU_EDIT_CONF, true);
     let reset_conf = make_menu_item (MENU_RESET_CONF, true);
 
+    let restart = make_menu_item (MENU_RESTART, true);
     let quit = make_menu_item (MENU_QUIT, true);
 
     let sep = PredefinedMenuItem::separator();
 
     let tray_menu = Menu::new();
-    tray_menu .append_items ( &[ &elevated, &auto_ov_enabled, &sep, &active, &overrides, &sep, &edit_conf ,&reset_conf, &sep, &quit ] );
+    tray_menu .append_items ( &[
+        &elevated, &auto_ov_enabled, &sep,
+        &active, &overrides, &sep,
+        &edit_conf ,&reset_conf, &sep,
+        &restart, &quit
+    ] );
 
 
     let tray_icon = TrayIconBuilder::new()
@@ -159,7 +186,7 @@ pub fn start_system_tray_monitor() {
                 update_overrides_counts (n_overrides, &overrides);
             }
             DuskyEvent::MenuAction (event) => {
-                exec_menu_action (&event.id.0, WinDusky::instance());
+                exec_menu_action (&event.id.0);
             }
             DuskyEvent::AutoOverlayEnable (enabled) => {
                 auto_ov_enabled.set_checked (enabled);
@@ -180,6 +207,35 @@ pub fn start_system_tray_monitor() {
         }
 
     } )
+
+}
+
+
+
+
+
+fn handle_restart_request (wd: &'static WinDusky) {
+
+    thread::spawn (|| {
+
+        warn! ("Attempting to Restart WinDusky !!");
+
+        wd.post_req__un_register_hotkeys();
+        thread::sleep (Duration::from_millis(100));
+
+        let mut cmd = Command::new (std::env::current_exe().unwrap());
+        cmd .creation_flags ((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
+
+        if let Ok (proc) = cmd .spawn() {
+            warn! ("Launched a new WinDusky process with pid: {:?}", proc.id());
+        }
+
+        //thread::sleep (Duration::from_millis (100));
+        //std::process::exit(0);
+
+        wd.post_req__quit();
+
+    });
 
 }
 

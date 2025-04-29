@@ -12,7 +12,7 @@ use windows::Win32::Foundation::{GetLastError, FALSE, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Magnification::{MagInitialize, MagUninitialize};
-use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, KillTimer, PostThreadMessageW, SetTimer, MSG, WM_APP, WM_HOTKEY, WM_TIMER};
+use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage, PostThreadMessageW, SetTimer, MSG, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER};
 
 use crate::config::Config;
 use crate::effects::{ColorEffect, ColorEffects};
@@ -29,7 +29,8 @@ mod hotkeys;
 const TIMER_TICK_MS : u32 = 16;
 
 const WM_APP__REQ_REFRESH         : u32 = WM_APP + 1;
-const WM_APP__REQ_CREATE_OVERLAY : u32 = WM_APP + 2;
+const WM_APP__REQ_CREATE_OVERLAY  : u32 = WM_APP + 2;
+const WM_APP__UN_REGISTER_HOTEKYS : u32 = WM_APP + 3;
 
 
 
@@ -124,6 +125,13 @@ impl WinDusky {
             else if msg.message == WM_APP__REQ_CREATE_OVERLAY {
                 self.create_overlay ( Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _) );
             }
+            else if msg.message == WM_APP__UN_REGISTER_HOTEKYS {
+                self.un_register_hotkeys();
+            }
+            else if msg.message == WM_DESTROY {
+                warn! ("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
+                PostQuitMessage(0);
+            }
             else {
                 //let _ = TranslateMessage(&msg);
                 // ^^ not needed as we dont do any gui w text etc
@@ -204,13 +212,21 @@ impl WinDusky {
     }
 
 
-    fn post_req__overlay_creation (&self, target:Hwnd, effect:ColorEffect) { unsafe {
+    pub fn post_req__overlay_creation (&self, target:Hwnd, effect:ColorEffect) { unsafe {
         let thread_id = self.thread_id.load(Ordering::Relaxed);
         let _ = PostThreadMessageW (thread_id, WM_APP__REQ_CREATE_OVERLAY, WPARAM (target.0 as _), LPARAM (effect.0 as _));
     } }
-    fn post_req__refresh (&self) { unsafe {
+    pub fn post_req__refresh (&self) { unsafe {
         let thread_id = self.thread_id.load(Ordering::Relaxed);
         let _ = PostThreadMessageW (thread_id, WM_APP__REQ_REFRESH, WPARAM(0), LPARAM(0));
+    } }
+    pub fn post_req__un_register_hotkeys (&self) { unsafe {
+        let thread_id = self.thread_id.load(Ordering::Relaxed);
+        let _ = PostThreadMessageW (thread_id, WM_APP__UN_REGISTER_HOTEKYS, WPARAM(0), LPARAM(0));
+    } }
+    pub fn post_req__quit (&self) { unsafe {
+        let thread_id = self.thread_id.load(Ordering::Relaxed);
+        let _ = PostThreadMessageW (thread_id, WM_DESTROY, WPARAM(0), LPARAM(0));
     } }
 
 

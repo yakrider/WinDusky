@@ -9,15 +9,17 @@ use std::thread;
 
 
 mod types;
-mod dusky;
-mod effects;
-mod rules;
-mod tray;
-mod config;
 mod keys;
-mod win_utils;
+mod effects;
+mod config;
+mod dusky;    // <- sub-mods: overlay, hooks, hotkeys
+mod rules;
 mod luminance;
 mod occlusion;
+mod tray;
+mod win_utils;
+
+
 
 fn main() {
 

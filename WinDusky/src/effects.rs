@@ -130,20 +130,20 @@ impl ColorEffectAtomic {
         ColorEffect::from(self).get()
     }
 
-    pub fn cycle_next (&self) -> ColorEffect {
+    pub fn cycle (&self, forward: bool) -> ColorEffect {
         let effs = ColorEffects::instance();
         let cycler = effs.cycle_order.read().unwrap();
         let cyc_len = cycler.len();
-        let prior = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, |cur| Some((cur + 1) % cyc_len));
-        let next = (prior.unwrap() + 1) % cyc_len;
-        ColorEffect(next)
+
+        // now there no adding negatives for usize, but we can substract positives, hence using incr+1 below
+        let incr_plus_one = if forward { 2 } else { 0 };   // either [1 or -1], then add 1
+        let prior_idx = self.0.fetch_update (
+            Ordering::AcqRel, Ordering::Acquire,
+            |cur| Some ((cur + cyc_len + incr_plus_one - 1) % cyc_len)
+        );
+        let new_idx = (prior_idx.unwrap() + cyc_len - incr_plus_one + 1) % cyc_len;
+        ColorEffect (new_idx)
     }
-    pub fn cycle_prev (&self) -> ColorEffect {
-        let effs = ColorEffects::instance();
-        let cycler = effs.cycle_order.read().unwrap();
-        let cyc_len = cycler.len();
-        let prior = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, |cur| Some((cur + cyc_len - 1) % cyc_len));
-        let prev = (prior.unwrap() + cyc_len - 1) % cyc_len;
-        ColorEffect(prev)
-    }
+    pub fn cycle_next (&self) -> ColorEffect { self.cycle (true) }
+    pub fn cycle_prev (&self) -> ColorEffect { self.cycle (false) }
 }

@@ -3,7 +3,7 @@
 use tracing::{error, info};
 
 use windows::Win32::Foundation::GetLastError;
-use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::config::HotKey;
@@ -17,6 +17,8 @@ const HOTKEY_ID__PREV_EFFECT     : usize = 3;
 const HOTKEY_ID__CLEAR_OVERLAYS  : usize = 4;
 const HOTKEY_ID__CLEAR_OVERRIDES : usize = 5;
 const HOTKEY_ID__CLEAR_ALL       : usize = 6;
+
+const HOTKEY_ID_MAX_REGISTERED : usize = HOTKEY_ID__CLEAR_ALL;
 
 
 
@@ -38,6 +40,18 @@ impl WinDusky {
         self.conf.get_hotkey__clear_all()       .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__CLEAR_ALL as _));
     }
 
+    pub(super) fn un_register_hotkeys (&self) {
+        // NOTE that this must be called from the same thread that registered the hotkeys!
+        fn un_register_hotkey (id:i32) { unsafe {
+            if UnregisterHotKey (None, id) .is_err() {
+                error! ("Failed to unregister hotkey id:{:?} .. {:?}", id, GetLastError());
+            }
+        } }
+        info! ("Attempting to un-register all WinDusky hotkeys");
+        for id in 1 .. HOTKEY_ID_MAX_REGISTERED + 1 {
+            un_register_hotkey (id as _);
+        }
+    }
 
 
     pub(super) fn handle_hotkeys (&self, hotkey: usize) {

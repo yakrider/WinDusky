@@ -28,7 +28,7 @@ impl WinDusky {
     pub(super) fn register_hotkeys (&self) {
         // Note that this must be called from a thread that will be monitoring its msg queue
         fn register_hotkey (hotkey:HotKey, id:i32) { unsafe {
-            info! ("Attempting to register hotkey id:{:?} .. {:?}", id, &hotkey);
+            info! ("Registering hotkey id:{:?} .. {:?}", id, &hotkey);
             if RegisterHotKey (None, id, hotkey.hk_mod() | MOD_NOREPEAT,  hotkey.key.to_vk_code() as _) .is_err() {
                 error! ("Failed to register hotkey id:{:?} .. {:?}", id, GetLastError());
             }
@@ -90,7 +90,7 @@ impl WinDusky {
                 // ^^ also clears cache and user overrides
             }
             HOTKEY_ID__CLEAR_OVERRIDES => {
-                self.rules.clear_user_overrides();
+                self.auto.clear_user_overrides();
             }
             _ => { }
         }
@@ -107,24 +107,24 @@ impl WinDusky {
             HOTKEY_ID__TOGGLE => {
                 if self .overlays .read().unwrap() .contains_key (&target) {
                     self.remove_overlay (target);
-                    self.rules.register_user_unapplied (target);
+                    self.auto.register_user_unapplied (target);
                 } else {
                     // if there was some effect for it in eval cache, we'll use that or the overlay
                     // (e.g. this would preserve last effect when the overlay might have been last toggled on/off)
-                    let effect = self.rules.check_rule_cached (target) .and_then (|r| r.effect) .unwrap_or (self.effects.get_default());
+                    let effect = self.auto.check_rule_cached (target) .and_then (|r| r.effect) .unwrap_or (self.effects.default);
                     self.create_overlay (target, effect);
                 }
             }
             HOTKEY_ID__NEXT_EFFECT => {
                 if let Some(overlay) = self.overlays .read().unwrap() .get (&target) {
                     let effect = overlay.apply_effect_next();
-                    self.rules.update_cached_rule_result_effect (target, effect);
+                    self.auto.update_cached_rule_result_effect (target, effect);
                 }
             }
             HOTKEY_ID__PREV_EFFECT => {
                 if let Some(overlay) = self.overlays .read().unwrap() .get (&target) {
                     let effect = overlay.apply_effect_prev();
-                    self.rules.update_cached_rule_result_effect (target, effect);
+                    self.auto.update_cached_rule_result_effect (target, effect);
                 }
             }
             _ => { }

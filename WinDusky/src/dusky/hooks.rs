@@ -95,7 +95,7 @@ impl WinDusky {
                     overlay.resync_ov_z_order();
                 }
                 // finally we'll see if auto-overlay rules should apply to this
-                self.handle_auto_overlay (hwnd);
+                self.auto.handle_auto_overlay (hwnd, self);
             }
 
             EVENT_SYSTEM_MINIMIZESTART | EVENT_SYSTEM_MINIMIZEEND | EVENT_SYSTEM_MOVESIZESTART | EVENT_SYSTEM_MOVESIZEEND |

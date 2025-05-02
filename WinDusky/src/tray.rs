@@ -114,9 +114,9 @@ fn exec_menu_action (id: &str) {
 
     match id {
       //MENU_ELEVATED         => { /* always disabled */ },
-        MENU_AUTO_OV_ENABLED  => { wd.rules.toggle_auto_overlay_enabled(); }
+        MENU_AUTO_OV_ENABLED  => { wd.auto.toggle_auto_overlay_enabled(); }
         MENU_ACTIVE_OVERLAYS  => { wd.post_req__overlay_clear_all(); }
-        MENU_USER_OVERRIDES   => { wd.rules.clear_user_overrides(); }
+        MENU_USER_OVERRIDES   => { wd.auto.clear_user_overrides(); }
         MENU_FULL_SCREEN_MODE => { wd.post_req__toggle_fs_mode(); }
         MENU_FULL_SCREEN_EFF  => { wd.post_req__toggle_fs_eff(); }
         MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit(); }

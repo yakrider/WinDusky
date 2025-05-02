@@ -5,7 +5,7 @@ use std::ops::Not;
 use tracing::{info, warn};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::RECT;
-use windows::Win32::Graphics::Gdi::{BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, MonitorFromWindow, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITOR_DEFAULTTONEAREST, SRCCOPY};
+use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;

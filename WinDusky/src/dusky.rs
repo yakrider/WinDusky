@@ -3,10 +3,8 @@
 //use no_deadlocks::RwLock;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
-use std::thread;
-use std::time::Duration;
 use tracing::{info, warn};
 use windows::Win32::Foundation::{GetLastError, FALSE, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -14,10 +12,8 @@ use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CON
 use windows::Win32::UI::Magnification::{MagInitialize, MagUninitialize};
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage, PostThreadMessageW, SetTimer, MSG, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER};
 
-use crate::config::Config;
-use crate::effects::{ColorEffect, ColorEffects};
-use crate::rules::{RulesMonitor, RulesResult};
-use crate::{tray, types::*, *};
+use crate::{*, types::*};
+use crate::effects::ColorEffect;
 
 mod overlay;
 mod hooks;
@@ -37,17 +33,19 @@ const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF  : u32 = WM_APP + 6;
 
 
 
+
 //#[derive (Debug)]
 pub struct WinDusky {
-    pub conf    : &'static Config,
-    pub rules   : &'static RulesMonitor,
-    pub effects : &'static ColorEffects,
+    pub conf    : &'static config::Config,
+    pub auto    : &'static auto::AutoOverlay,
+    pub effects : &'static effects::ColorEffects,
 
     fs_overlay : &'static FullScreenOverlay,
 
-    thread_id : AtomicU32,
-    overlays  : RwLock <HashMap <Hwnd, Overlay>>,
-    hosts     : RwLock <HashSet <Hwnd>>,
+    thread_id : u32,
+
+    overlays : RwLock <HashMap <Hwnd, Overlay>>,
+    hosts    : RwLock <HashSet <Hwnd>>,
 
     ov_topmost : HwndAtomic,
     // ^^ which overlay target hwnd (if any) we have cur set topmost
@@ -61,6 +59,7 @@ pub struct WinDusky {
 
 
 
+static WIN_DUSKY : OnceLock <WinDusky> = OnceLock::new();
 
 impl WinDusky {
 
@@ -69,36 +68,14 @@ impl WinDusky {
     // (Note however, that handlers for hotkeys registered from here, or hooks set here, are still in our thread context !!)
 
     pub fn instance() -> &'static WinDusky {
-        static INSTANCE : OnceLock <WinDusky> = OnceLock::new();
-        INSTANCE .get_or_init ( ||
-            WinDusky {
-                conf    : Config::instance(),
-                rules   : RulesMonitor::instance(),
-                effects : ColorEffects::instance(),
-
-                fs_overlay : FullScreenOverlay::instance(),
-
-                thread_id : AtomicU32::default(),
-                overlays  : RwLock::new (HashMap::default()),
-                hosts     : RwLock::new (HashSet::default()),
-
-                ov_topmost  : HwndAtomic::default(),
-                cur_timer   : AtomicUsize::default(),
-                occl_marked : Flag::new(true),
-            }
-        )
-        // ^^ NOTE that init is not called here, and the user should do so at their own convenience !!
+        WIN_DUSKY .get() .expect ("WinDusky not initialised yet !!")
     }
 
+    pub fn init () -> Result <&'static WinDusky, String> { unsafe {
 
-
-    pub fn start_overlay_manager (&self) -> Result<(), String> { unsafe {
-
-        if self.thread_id .load (Ordering::Acquire) != 0 {
-            // if we already have a thread-id, we must have already initied
-            return Ok(())
-        };
-        self.thread_id.store (GetCurrentThreadId(), Ordering::Release);
+        if WIN_DUSKY.get().is_some() {
+            return Err ("WinDusky was allready started!!".into());
+        }
 
         let _ = SetProcessDpiAwarenessContext (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -108,13 +85,33 @@ impl WinDusky {
 
         overlay::register_overlay_class()?;
 
-        self.conf.check_dusky_conf_version_match();
+        let conf = config::Config::instance();
+        conf.check_dusky_conf_version_match();
 
-        // our defaults come from confs, so we'll want to load those defaults into our defaults !!
-        self.effects.load_effects_from_conf (self.conf);
-        self.fs_overlay.effect.store (self.effects.get_default());
+        let effects = effects::ColorEffects::init (conf);
 
-        self.rules.load_conf_rules (self.conf, self.effects);
+        let fs_overlay = FullScreenOverlay::instance();
+        fs_overlay.effect.store (effects.default);
+
+        let auto = auto::AutoOverlay::init (conf, effects);
+
+        let dusky =  WinDusky {
+            conf, effects, auto, fs_overlay,
+
+            thread_id : GetCurrentThreadId(),
+
+            overlays : RwLock::new (HashMap::default()),
+            hosts    : RwLock::new (HashSet::default()),
+
+            ov_topmost  : HwndAtomic::default(),
+            cur_timer   : AtomicUsize::default(),
+            occl_marked : Flag::new(true),
+        };
+        Ok ( WIN_DUSKY .get_or_init (move || dusky) )
+    } }
+
+
+    pub fn start_win_dusky (&self) -> Result<(), String> { unsafe {
 
         self.register_hotkeys();
 
@@ -125,10 +122,12 @@ impl WinDusky {
         let mut msg: MSG = std::mem::zeroed();
 
         loop {
+
             if GetMessageW (&mut msg, None, 0, 0) == false {
                 let _ = MagUninitialize();
                 return Err (format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
+
             match msg.message {
                 WM_TIMER | WM_APP__REQ_REFRESH => {
                     self.refresh_overlays();
@@ -165,7 +164,7 @@ impl WinDusky {
 
 
 
-    fn check_fs_mode (&self) -> bool {
+    pub fn check_fs_mode (&self) -> bool {
         self.fs_overlay.enabled.is_set()
     }
     fn toggle_full_screen_mode (&self) -> bool {
@@ -176,14 +175,14 @@ impl WinDusky {
         self.set_full_screen_mode (enabled);
         enabled
     }
-    fn set_full_screen_mode (&self, enabled:bool) {
+    fn set_full_screen_mode (&self, enabled:bool) { tracing::debug!("enabled");
         self.fs_overlay.set_enabled(enabled);
         if enabled {
             // we gotta clear out per-hwnd overlays upon entering full-screen mode
             // Note that since this could be called from other threads (e.g tray), we must post message
             // (as hwnds can only be destroyed from the threads that called them)
             self.post_req__overlay_clear_all();
-            self.rules.clear_user_overrides();
+            self.auto.clear_user_overrides();
         }
         //else {}  // <- if we jsut toggled off fs-mode .. thats it, nothing more to do
 
@@ -211,8 +210,10 @@ impl WinDusky {
             self.occl_marked.set();
             overlays.insert (target, overlay);
             tray::update_tray__overlay_count (overlays.len());
+            info! ("Created Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
+        } else {
+            warn! ("Failed to create Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
         }
-        info! ("Created Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
     }
 
     fn remove_overlay (&self, target:Hwnd) {
@@ -239,9 +240,11 @@ impl WinDusky {
     }
 
     fn refresh_viz_bounds (&self) {
-        let targets : Vec<Hwnd> = self.overlays .read().unwrap() .values() .map (|ov| ov.target) .collect();
         self.occl_marked.clear();
-        if let Ok (bounds_map) = occlusion::calc_viz_bounds (self, &targets) {
+        let viz_res = occlusion::calc_viz_bounds (
+            self, self.overlays .read().unwrap() .values() .map (|ov| ov.target)
+        );  // <- separately to limit lock scope
+        if let Ok (bounds_map) = viz_res {
             let mut overlays = self.overlays.write().unwrap();
             for (target, bounds) in bounds_map .into_iter() {
                 if let Some (overlay) = overlays .get_mut (&target) {
@@ -266,13 +269,16 @@ impl WinDusky {
         self.ov_topmost.clear();
         self.disable_timer();
         tray::update_tray__overlay_count(0);
-        self.rules.clear_user_overrides();
+        self.auto.clear_user_overrides();
+    }
+
+    pub fn has_overlay (&self, hwnd: &Hwnd) -> bool {
+        self.overlays .read() .is_ok_and (|ovs| ovs.contains_key (hwnd))
     }
 
 
     fn post_simple_req (&self, msg:u32) { unsafe {
-        let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, msg, WPARAM(0), LPARAM(0));
+        let _ = PostThreadMessageW (self.thread_id, msg, WPARAM(0), LPARAM(0));
     } }
     pub fn post_req__toggle_fs_mode      (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_MODE) }
     pub fn post_req__toggle_fs_eff       (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_EFF) }
@@ -282,8 +288,9 @@ impl WinDusky {
     pub fn post_req__quit                (&self) { self.post_simple_req (WM_DESTROY) }
 
     pub fn post_req__overlay_create (&self, target:Hwnd, effect:ColorEffect) { unsafe {
-        let thread_id = self.thread_id.load(Ordering::Relaxed);
-        let _ = PostThreadMessageW (thread_id, WM_APP__REQ_OVERLAY_CREATE, WPARAM (target.0 as _), LPARAM (effect.0 as _));
+        let _ = PostThreadMessageW (
+            self.thread_id, WM_APP__REQ_OVERLAY_CREATE, WPARAM (target.0 as _), LPARAM (effect.0 as _)
+        );
     } }
 
 
@@ -299,69 +306,6 @@ impl WinDusky {
 
     pub fn get_hosts (&self) -> HashSet<Hwnd> {
         self.hosts.read().unwrap().clone()
-    }
-
-
-    fn handle_auto_overlay (&'static self, hwnd:Hwnd) {
-
-        // So we got an hwnd that doesnt have overlay yet, and we wanna see if auto-overlay rules apply to it
-
-        if self.check_fs_mode() { return }
-        if !self.rules.check_auto_overlay_enabled() { return }
-
-        // next we'll check if we have have evaluated auto-overlay rules for this previously
-        let result = self.rules.check_rule_cached (hwnd);
-
-        if let Some ( RulesResult { enabled: false, .. } ) = result {
-            return;
-        }
-        else if let Some ( RulesResult { enabled: true, effect, ..} ) = result {
-            self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
-            return
-        }
-
-
-        // so looks like this is first ever fgnd for this, so we'd like to eval from scratch ..
-        // .. but eval for luminance requies screen cap, so we'll spawn thread to do all that
-        thread::spawn ( move || {
-
-            // further, doing a screen cap too early (esp with BitBlt) can capture not-quite-painted hwnds
-            // .. so we'll put up a small delay before we go about the hwnd screen capture business
-            thread::sleep (Duration::from_millis (self.rules.get_auto_overlay_delay_ms() as _));
-
-            let result = self.rules.re_check_rule(hwnd);
-
-            // but we'll ditch early if elevation restrictions apply (i.e this guy is elev but we're not)
-            if let RulesResult { elev_excl: true, .. } = result {
-                warn! ("!! WARNING !! .. WinDusky is NOT Elevated. Cannot overlay elevated {:?}", hwnd);
-                return;
-            }
-
-            // otherwise, if it passed rules, we can go ahead and request an overlay creation
-            if let RulesResult { enabled: true, effect, .. } = result {
-                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
-            }
-
-            // however, as seen before, it takes time for some windows to get all their properties after newly created hwnds report fgnd
-            // .. so we'll just sit on delays and check it a couple times (just like done in switche/krusty etc)
-            // The easiest way to test the utility of this is prob to start something like perfmon.exe w/ and w/o delay-waits
-
-            thread::sleep (Duration::from_millis(300));
-
-            if self.overlays.read().unwrap().contains_key(&hwnd) { return }
-            if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()));
-            }
-
-            thread::sleep (Duration::from_millis(500));
-
-            if self.overlays.read().unwrap().contains_key(&hwnd) { return }
-            if let RulesResult { enabled: true, effect, .. } = self.rules.re_check_rule(hwnd) {
-                self.post_req__overlay_create (hwnd, effect.unwrap_or (self.effects.get_default()))
-            }
-
-        } );
-
     }
 
 }

@@ -1,19 +1,20 @@
+
 use std::sync::OnceLock;
-use crate::dusky::WinDusky;
-use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects, COLOR_EFF__IDENTITY};
-use crate::occlusion::Rect;
-use crate::types::{Flag, Hwnd};
-use crate::win_utils::wide_string;
 use tracing::{error, info};
+
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, MapWindowPoints, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Magnification::{MagSetColorEffect, MagSetFullscreenColorEffect, MagSetWindowSource, MAGCOLOREFFECT, WC_MAGNIFIERW};
-use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, GetWindow, RegisterClassExW, SetWindowPos, CS_HREDRAW, CS_VREDRAW, GW_HWNDPREV, HCURSOR, HICON, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE};
+use windows::Win32::UI::WindowsAndMessaging::*;
 
-
+use crate::dusky::WinDusky;
+use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects, COLOR_EFF__IDENTITY};
+use crate::occlusion::Rect;
+use crate::types::{Flag, Hwnd};
+use crate::win_utils::wide_string;
 
 
 //  ~~~ Thread Affinity Reminder ~~~
@@ -90,7 +91,7 @@ impl FullScreenOverlay {
             FullScreenOverlay {
                 enabled : Flag::default(),
                 active  : Flag::default(),
-                effect  : ColorEffectAtomic::new (ColorEffects::instance().get_default()),
+                effect  : ColorEffectAtomic::new (ColorEffects::instance().default),
             }
         )
     }
@@ -273,10 +274,10 @@ impl Overlay {
             // otherwise we'll invalidate based on prior calculated occlusion bounds (if any)
             let mag: HWND = self.mag.into();
             let mut lpp = [ POINT {x:bounds.left, y:bounds.top}, POINT {x:bounds.right, y:bounds.bottom} ];
-            if MapWindowPoints (None, Some(mag), &mut lpp) != 0 {
-                let dirty = RECT { left:lpp[0].x, top:lpp[0].y, right:lpp[1].x, bottom:lpp[1].y };
-                let _ = InvalidateRect (Some(mag), Some(&dirty), false);
-            }
+            let _ = MapWindowPoints (None, Some(mag), &mut lpp);
+            // ^^ ignore results as this can return 0 when it either fails to update points, or didnt have to update them
+            let dirty = RECT { left:lpp[0].x, top:lpp[0].y, right:lpp[1].x, bottom:lpp[1].y };
+            let _ = InvalidateRect (Some(mag), Some(&dirty), false);
         }
     } }
 

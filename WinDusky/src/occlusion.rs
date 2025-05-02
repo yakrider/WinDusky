@@ -1,6 +1,6 @@
 
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use windows::core::{Result, BOOL};
 use windows::Win32::Foundation::{FALSE, HWND, LPARAM, RECT, TRUE};
@@ -15,7 +15,7 @@ use crate::win_utils;
 
 
 /// Rect structure that supports decompositions into progressively non-intersecting sub-rects
-#[derive (Debug, Default, Clone, Copy)]
+#[derive (Debug, Default, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Rect {
     pub left   : i32,
     pub top    : i32,
@@ -98,6 +98,9 @@ impl Rect {
 /// Struct to store data for each hwnd we're calculating occlusion for
 #[derive (Debug, Default)]
 struct HwndDat {
+
+    hwnd: Hwnd,
+
     rect : Rect,
     // ^^ we'll keep the full rect so we can quickly skip on non-intersecting hwnd report
 
@@ -119,7 +122,7 @@ struct BatchDat {
     hosts : HashSet <Hwnd>,
     // ^^ we'll keep a local copy of hosts so we can skip them when calculating occlusion
 
-    dats : HashMap <Hwnd, HwndDat>,
+    dats : Vec<HwndDat>,
     // ^^ data for all the hwnds we're tracking
 
     n_viz : usize,
@@ -151,7 +154,7 @@ unsafe extern "system" fn enum_windows_proc (hwnd: HWND, lparam: LPARAM) -> BOOL
     let src: Rect = rect.into();
 
     // Iterate through the target windows we are tracking
-    for (&target, dat) in batch.dats.iter_mut() {
+    for dat in batch.dats.iter_mut() {
 
         if dat.viz_sects.is_empty() { continue; }
         // ^^ the hwnd were already completely occluded
@@ -159,7 +162,7 @@ unsafe extern "system" fn enum_windows_proc (hwnd: HWND, lparam: LPARAM) -> BOOL
         if dat.seen_self { continue; }
         // ^^ its own hwnd already came up before in enum list, so nothing afterwards can occlude it
 
-        if target == hwnd.into() {
+        if dat.hwnd == hwnd.into() {
             // this is its own hwnd, so nothing else streaming after this can block it, we'll mark it for short-circuit
             dat.seen_self = true;
             batch.n_self_unseen = batch.n_self_unseen .saturating_sub(1);
@@ -203,22 +206,26 @@ unsafe extern "system" fn enum_windows_proc (hwnd: HWND, lparam: LPARAM) -> BOOL
 
 /// Calculates the un-occluded status of target HWNDs.
 /// Returns a mapping of Hwnd to a bounding rect of the un-occluded regiions, if any
-pub fn calc_viz_bounds (wd: &WinDusky, targets: &[Hwnd]) -> Result <Vec <(Hwnd, Option<Rect>)>> {
-
+pub fn calc_viz_bounds <I> (wd: &WinDusky, targets: I) -> Result <Vec <(Hwnd, Option<Rect>)>> where
+    I : IntoIterator <Item = Hwnd>,
+    I::IntoIter : ExactSizeIterator
+{
     // we'll init the batch data with the target rects
-    let mut dats : HashMap <Hwnd, HwndDat> = HashMap::new();
-    for &target in targets { unsafe {
-        let mut viz_sects : Vec<Rect> = vec![];
-        let mut rect = RECT::default();
-        let _ = GetWindowRect (target.into(), &mut rect);
-        let rect:Rect = rect.into();
-        if !rect.is_empty() { viz_sects = vec![rect]; }
-        dats.insert (target, HwndDat { rect, seen_self:false, viz_sects, sects_swap: Vec::new() });
-    } }
-
-    let n_viz = dats.values() .filter (|dat| !dat.viz_sects.is_empty()) .count();
+    let targets = targets.into_iter();
     let n_self_unseen = targets.len();
     let hosts = wd.get_hosts();
+    let mut dats : Vec<HwndDat> = Vec::with_capacity (targets.len());
+
+    for hwnd in targets { unsafe {
+        let mut viz_sects : Vec<Rect> = vec![];
+        let mut rect = RECT::default();
+        let _ = GetWindowRect (hwnd.into(), &mut rect);
+        let rect:Rect = rect.into();
+        if !rect.is_empty() { viz_sects = vec![rect]; }
+        dats.push (HwndDat { hwnd, rect, seen_self:false, viz_sects, sects_swap: Vec::new() });
+    } }
+
+    let n_viz = dats .iter() .filter (|dat| !dat.viz_sects.is_empty()) .count();
     let mut batch = BatchDat { hosts, dats, n_viz, n_self_unseen };
 
     //tracing::debug! ("Starting occlusion check. Initial visible targets: {}", batch.n_viz);
@@ -231,12 +238,13 @@ pub fn calc_viz_bounds (wd: &WinDusky, targets: &[Hwnd]) -> Result <Vec <(Hwnd, 
 
     // Convert the final lists of visible sections into bounding rects
     let mut result = vec![];
-    for (hwnd, dat) in batch.dats.into_iter() {
+    for dat in batch.dats.into_iter() {
         let bounding = dat.viz_sects .into_iter() .reduce (|a,b| a.bounding(&b));
-        result .push ((hwnd, bounding));
+        result .push ((dat.hwnd, bounding));
     }
-    //result.sort();
-    // ^^ only for consistentcy during debug printouts
+
+    // .. deubug printouts
+    //result .iter() .for_each (|(h,r)| tracing::debug! ("{:?} : {:?}", h, r) );
 
     Ok (result)
 }

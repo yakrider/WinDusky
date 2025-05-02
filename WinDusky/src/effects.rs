@@ -1,14 +1,13 @@
 #![ allow (dead_code) ]
 
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
-use atomic_refcell::AtomicRefCell;
-use itertools::Itertools;
 use tracing::info;
 use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
-use crate::config;
 
+use crate::*;
 
 
 
@@ -35,29 +34,23 @@ pub const COLOR_EFF__FALLBACK_DEFAULT : MAGCOLOREFFECT = COLOR_EFF__SIMPLE_INVER
 
 #[derive (Debug)]
 pub struct ColorEffects {
-    effects     : AtomicRefCell <HashMap <String, MAGCOLOREFFECT>>,
-    cycle_order : AtomicRefCell <Vec <(String, MAGCOLOREFFECT)>>,
-    default     : ColorEffectAtomic,
+    pub effects     : HashMap <String, MAGCOLOREFFECT>,
+    pub cycle_order : Vec <(String, MAGCOLOREFFECT)>,
+    pub default     : ColorEffect,
 }
 
-
+static COLOR_EFFECTS : OnceLock <ColorEffects> = OnceLock::new();
 
 impl ColorEffects {
 
     pub fn instance() -> &'static ColorEffects {
-        static INSTANCE: OnceLock <ColorEffects> = OnceLock::new();
-        INSTANCE .get_or_init ( ||
-            ColorEffects {
-                effects     : AtomicRefCell::new (HashMap::new()),
-                cycle_order : AtomicRefCell::new (Vec::new()),
-                default     : ColorEffectAtomic::default(),
-            }
-        )
+       COLOR_EFFECTS .get() .expect ("ColorEffects not iniitialized yet !!")
     }
 
-    pub fn load_effects_from_conf (&self, conf: &config::Config) {
+    pub fn init (conf: &config::Config) -> &'static ColorEffects {
+
         // lets load all the color-effects specified in conf first
-        let mut effects = self.effects.borrow_mut();
+        let mut effects : HashMap <String, MAGCOLOREFFECT> = HashMap::new();
         for effect in conf.get_color_effects() {
             let _ = effects .insert ( effect.name, MAGCOLOREFFECT { transform: effect.transform } );
         }
@@ -67,9 +60,8 @@ impl ColorEffects {
         }
 
         // next we'll load the defined cycle-order
-        let mut cycle_order = self.cycle_order.borrow_mut();
-        *cycle_order = conf.get_effects_cycle_order() .into_iter()
-            .filter_map (|s| effects .get(&s) .map (|v| (s,*v))) .collect();
+        let mut cycle_order = conf.get_effects_cycle_order() .into_iter()
+            .filter_map (|s| effects .get(&s) .map (|v| (s,*v))) .collect::<Vec<_>>();
 
         // but it it was empty or not specified, lets just put all defined effects in cycle-order
         if cycle_order.is_empty() {
@@ -78,23 +70,20 @@ impl ColorEffects {
             }
         }
         info! ("loaded color-effects in cycle-order: {:?}", cycle_order.iter().map(|(s,_)| s).collect::<Vec<_>>());
-        drop (cycle_order);
 
         let default_effect = &conf.get_effects_default();
-        let default_id = self.get_by_name(default_effect);
-        info! ("loaded default color-effect as : {:?}", (default_id, &default_effect));
-        self.default .store (self.get_by_name (default_effect));
+        let default_id = cycle_order .iter().find_position (|(s,_)| s == default_effect) .map (|(idx, _)| idx) .unwrap_or(0);
+        let default = ColorEffect (default_id);
+        info! ("loaded default color-effect as : {:?}", (default, &default_effect));
+
+        COLOR_EFFECTS .get_or_init ( || ColorEffects { effects, cycle_order, default } )
+
     }
 
     pub fn get_by_name (&self, name: &str) -> ColorEffect {
         // if the conf specifies a valid default effect, we'll use that, else we'll use the first entry in cycle order
-        let idx = self.cycle_order .borrow() .iter()
-            .find_position (|(s,_)| s == name) .map (|(idx, _)| idx) .unwrap_or_default();
-        ColorEffect(idx)
-    }
-
-    pub fn get_default (&self) -> ColorEffect {
-        (&self.default).into()
+        let idx = self.cycle_order .iter() .find_position (|(s,_)| s == name) .map (|(idx, _)| idx) .unwrap_or_default();
+        ColorEffect (idx)
     }
 
 }
@@ -115,13 +104,11 @@ impl ColorEffect {
         ColorEffect(idx)
     }
     pub fn get (&self) -> MAGCOLOREFFECT {
-        let effs = ColorEffects::instance();
-        let cycler = effs.cycle_order.borrow();
+        let cycler = &ColorEffects::instance().cycle_order;
         cycler .get (self.0 % cycler.len()) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
     }
     pub fn name (&self) -> &'static str {
-        // we only load color effects from configs at init .. so here we're going to refere to strings there w/o locks(!!)
-        let cycler = unsafe { &*ColorEffects::instance().cycle_order.as_ptr() };
+        let cycler = &ColorEffects::instance().cycle_order;
         cycler .get (self.0 % cycler.len()) .map (|(s,_)| s.as_str()) .unwrap_or("")
     }
 }
@@ -146,9 +133,7 @@ impl ColorEffectAtomic {
     }
 
     pub fn cycle (&self, forward: bool) -> ColorEffect {
-        let effs = ColorEffects::instance();
-        let cycler = effs.cycle_order.borrow();
-        let cyc_len = cycler.len();
+        let cyc_len = ColorEffects::instance().cycle_order.len();
         // now there no adding negatives for usize, but we can substract positives, hence using incr+1 below
         let incr_plus_one = if forward { 2 } else { 0 };   // either [1 or -1], then add 1
         let prior_idx = self.0.fetch_update (

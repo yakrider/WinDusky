@@ -58,6 +58,7 @@ pub fn check_window_cloaked (hwnd:Hwnd) -> bool { unsafe {
 } }
 
 
+
 pub fn get_win_title (hwnd:Hwnd) -> String { unsafe {
     let mut lpstr : [u16; 512] = zeroed();
     let copied_len = GetWindowTextW (hwnd.into(), &mut lpstr);
@@ -72,11 +73,6 @@ pub fn get_win_class_by_hwnd (hwnd:Hwnd) -> String { unsafe {
 } }
 
 
-pub fn get_pid_by_hwnd (hwnd:Hwnd) -> u32 { unsafe {
-    let mut pid = 0u32;
-    let _ = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
-    pid
-} }
 
 pub fn get_exe_by_pid (pid:u32) -> Option<String> { unsafe {
     let h_proc = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, false, pid) .ok()?;
@@ -86,10 +82,15 @@ pub fn get_exe_by_pid (pid:u32) -> Option<String> { unsafe {
     QueryFullProcessImageNameW (h_proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut in_out_len) .ok() ?;
     OsString::from_wide (&buf[..in_out_len as _]) .to_string_lossy() .rsplit("\\") .next() .map(|s| s.to_string())
 } }
-
+pub fn get_pid_by_hwnd (hwnd:Hwnd) -> u32 { unsafe {
+    let mut pid = 0u32;
+    let _ = GetWindowThreadProcessId (hwnd.into(), Some(&mut pid));
+    pid
+} }
 pub fn get_exe_by_hwnd (hwnd:Hwnd) -> Option<String> {
     get_exe_by_pid ( get_pid_by_hwnd (hwnd))
 }
+
 
 
 pub fn check_cur_proc_elevated () -> Option<bool> {

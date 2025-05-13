@@ -97,7 +97,7 @@ auto_overlay_luminance__delay_ms = 0
 # Comma separated list of exes to exclude from luminance based auto-overlay application
 # For instance, windows of browsers can be expected to change based on content, so one time hwnd luminance based rules might not be appropriate
 auto_overlay_luminance__exclusion_exes = [
-	"chrome.exe", "firefox.exe", "msedge.exe",
+	"chrome.exe", "firefox.exe", "msedge.exe", "msedgewebview2.exe",
 ]
 
 

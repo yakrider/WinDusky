@@ -74,10 +74,10 @@ impl WinDusky {
                 tray::update_full_screen_mode (enabled, eff.map(|e| e.name()))
             }
             match hotkey {
-                HOTKEY_ID__TOGGLE         => { update_tray (true, self.fs_overlay .toggle_effect() ) }
-                HOTKEY_ID__NEXT_EFFECT    => { update_tray (true, self.fs_overlay .apply_effect_next() ) }
-                HOTKEY_ID__PREV_EFFECT    => { update_tray (true, self.fs_overlay .apply_effect_prev() ) }
-                HOTKEY_ID__CLEAR_OVERLAYS => { self.fs_overlay .unapply_effect(); update_tray (false, None); }
+                HOTKEY_ID__TOGGLE         => { update_tray (true,  self.fs_overlay .toggle_effect() ) }
+                HOTKEY_ID__NEXT_EFFECT    => { update_tray (true,  self.fs_overlay .apply_effect_next() ) }
+                HOTKEY_ID__PREV_EFFECT    => { update_tray (true,  self.fs_overlay .apply_effect_prev() ) }
+                HOTKEY_ID__CLEAR_OVERLAYS => { update_tray (false, self.fs_overlay .unapply_effect() ) }
                 _ => {}
             }
             return;
@@ -95,14 +95,11 @@ impl WinDusky {
             _ => { }
         }
 
-        // and now for those that need a target hwnd, we'll return early if there's no active fgnd
-        let target : Hwnd = unsafe { GetForegroundWindow().into() };
-        if !target.is_valid() {
-            warn! ("~~ WARNING ~~ Hotkey received, but no active foreground found .. Ignoring!!");
-            return
-        }
+        // now for hotkeys that need a target hwnd, we'll load from cache since GetForegroundWindow can return null during transitions etc
+        // further, this lets us filter out things like krusty-qbar where we might clicking to send out dusky hotkeys etc
+        let target = self.fgnd_cache.load();
 
-        // and finally we have the rest of the per-hwnd hotkeys
+        // and finally we have can process the per-hwnd hotkeys that need a hwnd target
         match hotkey {
             HOTKEY_ID__TOGGLE => {
                 if self .overlays .read().unwrap() .contains_key (&target) {

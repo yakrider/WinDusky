@@ -1,6 +1,7 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+// Prevents additional console window on Windows, DO NOT REMOVE!!
+// we could make it only for release instead by using : all ( not(debug_assertions), target_os = "windows" )
 #![cfg_attr (
-    all ( not(debug_assertions), target_os = "windows" ),
+    all (target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
@@ -18,6 +19,7 @@ mod luminance;
 mod occlusion;
 mod tray;
 mod win_utils;
+
 
 
 

@@ -106,7 +106,7 @@ fn capture_hwnd (hwnd:Hwnd, use_bitblt: bool) -> Option<(Vec<u8>, i32, i32)> { u
         }
     }
 
-    let dc_hwnd = if use_bitblt { Some(hwnd) } else { None };
+    let dc_hwnd = use_bitblt.then_some(hwnd);
     let hdc = GetDC (dc_hwnd);
     let _guard = WindowDcGuard { hwnd: dc_hwnd, hdc };
     if hdc.is_invalid() { return None }

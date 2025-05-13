@@ -4,7 +4,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use crate::dusky::WinDusky;
 use crate::types::Hwnd;
-
+use crate::win_utils;
 
 
 impl WinDusky {
@@ -79,7 +79,14 @@ impl WinDusky {
             }
 
             EVENT_SYSTEM_FOREGROUND => {
-                // first off, any fgnd change is worth triggering occlusion updates
+                // first, since we drive dusky from krusty-qbar, we'll ignore any fgnds from interacting there
+                if win_utils::get_exe_by_hwnd (hwnd) .is_some_and (|exe| exe == "krustyboard.exe") {
+                    return
+                }
+                // else we'll cache this as target for hotkeys actions (GetForegroundWindow  can return null during transitions etc)
+                self.fgnd_cache.store (hwnd);
+
+                // and we'll mark any other fgnd change as worth triggering occlusion updates
                 self.occl_marked.set();
 
                 let overlays = self.overlays.read().unwrap();

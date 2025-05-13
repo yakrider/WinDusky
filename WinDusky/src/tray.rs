@@ -19,7 +19,7 @@ use tracing::{error, warn};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS};
 
 use crate::dusky::WinDusky;
 
@@ -95,7 +95,7 @@ fn menu_disp_str (id:&str) -> &str {
         MENU_AUTO_OV_ENABLED  => "Auto Overlay Enabled",
         MENU_ACTIVE_OVERLAYS  => "Overlays : 0",
         MENU_USER_OVERRIDES   => "User Overrides : 0",
-        MENU_FULL_SCREEN_MODE => "Enable Full Screen Mode",
+        MENU_FULL_SCREEN_MODE => "Enable Full Screen Effect",
         MENU_FULL_SCREEN_EFF  => "(Effect: None)",
         MENU_EDIT_CONF        => "Edit Config",
         MENU_RESET_CONF       => "Reset Config",
@@ -217,9 +217,9 @@ pub fn start_system_tray_monitor() {
             DuskyEvent::FullScreenMode {enabled, effect} => {
                 full_screen_mode.set_checked (enabled);
                 full_screen_eff .set_enabled (enabled);
-                full_screen_eff .set_checked (effect.is_some());
+                full_screen_eff .set_checked (enabled && effect.is_some());
                 full_screen_eff .set_text (format! ("(Effect: {:?})", effect.unwrap_or("None")));
-                full_screen_mode.set_text (if enabled {"Full Screen Mode"} else {"Enable Full Screen Mode"});
+                full_screen_mode.set_text (if enabled {"Full Screen Effect Enabled"} else {"Enable Full Screen Effect"});
                 for menu in [&auto_ov_enabled, &active, &overrides] {
                     menu.set_enabled (!enabled)
                 }
@@ -256,7 +256,7 @@ fn handle_restart_request (wd: &'static WinDusky) {
         thread::sleep (Duration::from_millis(100));
 
         let mut cmd = Command::new (std::env::current_exe().unwrap());
-        cmd .creation_flags ((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
+        cmd .creation_flags ((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW).0);
 
         if let Ok (proc) = cmd .spawn() {
             warn! ("Launched a new WinDusky process with pid: {:?}", proc.id());

@@ -14,7 +14,7 @@ use crate::dusky::WinDusky;
 use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects, COLOR_EFF__IDENTITY};
 use crate::occlusion::Rect;
 use crate::types::{Flag, Hwnd};
-use crate::win_utils::wide_string;
+use crate::win_utils::*;
 
 
 //  ~~~ Thread Affinity Reminder ~~~
@@ -130,10 +130,12 @@ impl FullScreenOverlay {
         Some (self.apply_effect_cycled (Some(false)))
     }
 
-    pub(super) fn unapply_effect (&self) {
-        self.active.clear();
+    pub(super) fn unapply_effect (&self) -> Option<ColorEffect> {
+        let prior = (&self.effect).into();
         info! ("Clearing Full Screen Overlay color effect .. (the mode remains active)!");
+        self.active.clear();
         self.apply_color_effect (COLOR_EFF__IDENTITY);
+        Some (prior)
     }
 
     fn apply_color_effect (&self, effect: MAGCOLOREFFECT) { unsafe {
@@ -231,7 +233,7 @@ impl Overlay {
         // however .. while its fgnd, we'll make it top to avoid flashing etc (while the host and target switch turns being in front)
         // (and so then to keep these from lingering on top, we've added also sanitation to event listener itself)
 
-        let fgnd : Hwnd = GetForegroundWindow().into();
+        let fgnd:Hwnd = GetForegroundWindow().into();
         if self.target == fgnd {
             // now if some other overlay was previously on-top, we'll want to un-top it first
             let ov_top = wd.ov_topmost.load();
@@ -253,7 +255,8 @@ impl Overlay {
         // ^^ the two step appears necessary, as w hwnd-insert specified, it doesnt seem to move/reposition the window!
 
         // next, if we are actually fgnd, we'll also try and set topmost (which OS might or might not always allow)
-        if self.target == fgnd {
+        // plus, if the target is already topmost, we'll do the same too
+        if self.target == fgnd || win_check_if_topmost(self.target) {
             let _ = SetWindowPos (host, Some(HWND_TOP),      0, 0, 0, 0,  SWP_NOMOVE | SWP_NOSIZE);
             let _ = SetWindowPos (host, Some(HWND_TOPMOST),  0, 0, 0, 0,  SWP_NOMOVE | SWP_NOSIZE);
             // ^^ having both seems to be required for robustness, esp after freshly closing some overlain windows etc ¯\_(ツ)_/¯

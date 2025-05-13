@@ -55,6 +55,9 @@ pub struct WinDusky {
 
     occl_marked : Flag,
     // ^^ whether we've been marked to have to refresh overlay occlusion calcs (based on win-events)
+
+    fgnd_cache : HwndAtomic,
+    // ^^ since GetForegroundWindow can return null in transitions, we'd rather act on last cached fgnd for fallback
 }
 
 
@@ -106,6 +109,8 @@ impl WinDusky {
             ov_topmost  : HwndAtomic::default(),
             cur_timer   : AtomicUsize::default(),
             occl_marked : Flag::new(true),
+
+            fgnd_cache  : HwndAtomic::default(),
         };
         Ok ( WIN_DUSKY .get_or_init (move || dusky) )
     } }
@@ -175,7 +180,8 @@ impl WinDusky {
         self.set_full_screen_mode (enabled);
         enabled
     }
-    fn set_full_screen_mode (&self, enabled:bool) { tracing::debug!("enabled");
+    fn set_full_screen_mode (&self, enabled:bool) {
+        let prior_eff : ColorEffect = (&self.fs_overlay.effect).into();
         self.fs_overlay.set_enabled(enabled);
         if enabled {
             // we gotta clear out per-hwnd overlays upon entering full-screen mode
@@ -184,12 +190,10 @@ impl WinDusky {
             self.post_req__overlay_clear_all();
             self.auto.clear_user_overrides();
         }
-        //else {}  // <- if we jsut toggled off fs-mode .. thats it, nothing more to do
+        //else {}  // <- if we just toggled off fs-mode .. thats it, nothing more to do
 
-        let effect = if !enabled { None } else {
-            Some (ColorEffect::from (&self.fs_overlay.effect) .name())
-        };
-        tray::update_full_screen_mode (enabled, effect);
+        let effect = if !enabled { prior_eff } else { (&self.fs_overlay.effect).into() };
+        tray::update_full_screen_mode (enabled, Some(effect.name()));
     }
 
 

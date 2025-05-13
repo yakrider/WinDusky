@@ -125,9 +125,7 @@ impl AutoOverlay {
         }
         for class in conf.get_auto_overlay_window_classes() {
             //tracing::debug! ("loading auto-overlay exe rule : {:?}", class);
-            let excl_exes =  if !class.exclusion_exes.is_empty() {
-                Some ( class.exclusion_exes.into_iter().collect::<HashSet<String>>() )
-            } else { None };
+            let excl_exes =  (!class.exclusion_exes.is_empty()) .then_some (class.exclusion_exes.into_iter().collect::<HashSet<String>>());
             let effect = class.effect .as_ref() .map (|s| effects.get_by_name(s));
             let _ = rules .insert (
                 RulesKey::Rule_ClassId (class.class),

@@ -1,4 +1,4 @@
-#![ allow (non_snake_case) ]
+#![allow (non_snake_case)]
 
 //use no_deadlocks::RwLock;
 
@@ -20,6 +20,9 @@ mod hooks;
 mod hotkeys;
 
 use overlay::{FullScreenOverlay, Overlay};
+use crate::presets::{GammaPresets, GammaPreset, GammaPresetAtomic};
+
+
 
 const TIMER_TICK_MS : u32 = 16;
 
@@ -33,16 +36,19 @@ const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF  : u32 = WM_APP + 6;
 
 
 
-
 //#[derive (Debug)]
 pub struct WinDusky {
     pub conf    : &'static config::Config,
     pub auto    : &'static auto::AutoOverlay,
     pub effects : &'static effects::ColorEffects,
+    pub presets : &'static GammaPresets,
 
     fs_overlay : &'static FullScreenOverlay,
 
     thread_id : u32,
+
+    gamma_active : Flag,
+    gamma_preset : GammaPresetAtomic,
 
     overlays : RwLock <HashMap <Hwnd, Overlay>>,
     hosts    : RwLock <HashSet <Hwnd>>,
@@ -74,7 +80,7 @@ impl WinDusky {
         WIN_DUSKY .get() .expect ("WinDusky not initialised yet !!")
     }
 
-    pub fn init () -> Result <&'static WinDusky, String> { unsafe {
+    pub fn init (conf: &'static config::Config) -> Result <&'static WinDusky, String> { unsafe {
 
         if WIN_DUSKY.get().is_some() {
             return Err ("WinDusky was allready started!!".into());
@@ -88,10 +94,10 @@ impl WinDusky {
 
         overlay::register_overlay_class()?;
 
-        let conf = config::Config::instance();
         conf.check_dusky_conf_version_match();
 
         let effects = effects::ColorEffects::init (conf);
+        let presets = GammaPresets::init (conf);
 
         let fs_overlay = FullScreenOverlay::instance();
         fs_overlay.effect.store (effects.default);
@@ -99,9 +105,12 @@ impl WinDusky {
         let auto = auto::AutoOverlay::init (conf, effects);
 
         let dusky =  WinDusky {
-            conf, effects, auto, fs_overlay,
+            conf, auto, effects, presets, fs_overlay,
 
             thread_id : GetCurrentThreadId(),
+
+            gamma_active : Flag::default(),
+            gamma_preset : GammaPresetAtomic::default(),
 
             overlays : RwLock::new (HashMap::default()),
             hosts    : RwLock::new (HashSet::default()),
@@ -112,6 +121,7 @@ impl WinDusky {
 
             fgnd_cache  : HwndAtomic::default(),
         };
+
         Ok ( WIN_DUSKY .get_or_init (move || dusky) )
     } }
 
@@ -122,6 +132,10 @@ impl WinDusky {
 
         self.setup_win_hooks();
 
+        // we'll setup gamma, but only if specified active at startup (to avoid resetting otherwise)
+        self.gamma_active.store (self.conf.check_flag__gamma_at_startup());
+        self.gamma_preset.store (self.presets.default);
+        if self.gamma_active.is_set() { self.update_gamma_state(); }
 
         // finally we just babysit the message loop
         let mut msg: MSG = std::mem::zeroed();
@@ -158,6 +172,7 @@ impl WinDusky {
                 }
                 WM_DESTROY => {
                     warn!("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
+                    if self.gamma_active.is_set() { gamma::reset_screen_ramp(); }
                     let _ = MagUninitialize();
                     PostQuitMessage(0);
                 }
@@ -167,6 +182,41 @@ impl WinDusky {
 
     } }
 
+    pub fn update_gamma_state (&self) {
+        if let Some ((spec, name)) = self.gamma_active.is_set() .then_some ( {
+            let preset = GammaPreset::from (&self.gamma_preset);
+            (preset.get(), preset.name())
+        } ) {
+            info! ("Applying GammaPreset values from Preset : {:?}", name);
+            let succeeded = gamma::set_screen_ramp_gbct (&spec.gbc, spec.color_temp);
+            tray::update_tray__gamma_state (true, succeeded, Some(name));
+        } else {
+            info! ("Resetting Gamma values to Normal");
+            gamma::reset_screen_ramp();
+            tray::update_tray__gamma_state (false, true, None);
+        }
+    }
+
+    pub fn toggle_gamma_active (&self) {
+        if self.gamma_active.is_set() && !self.check_active_gamma_preset_match().unwrap_or_default() {
+            warn! ("Gamma Preset Toggle requested, but active ramp does not match preset .. Re-applying instead !!");
+            self.update_gamma_state();
+            return
+        }
+        self.gamma_active.toggle();
+        self.update_gamma_state();
+    }
+
+    pub fn check_active_gamma_preset_match (&self) -> Option <bool> {
+        let preset = GammaPreset::from (&self.gamma_preset) .get();
+        gamma::check_active_gamma_match (&preset.gbc, preset.color_temp)
+    }
+
+    pub fn cycle_gamma_preset (&self, forward: bool) {
+        if self.gamma_active.is_clear() { return }
+        self.gamma_preset.cycle (forward);
+        self.update_gamma_state();
+    }
 
 
     pub fn check_fs_mode (&self) -> bool {
@@ -188,7 +238,7 @@ impl WinDusky {
             // Note that since this could be called from other threads (e.g tray), we must post message
             // (as hwnds can only be destroyed from the threads that called them)
             self.post_req__overlay_clear_all();
-            self.auto.clear_user_overrides();
+            // ^^ will also clear overrides
         }
         //else {}  // <- if we just toggled off fs-mode .. thats it, nothing more to do
 

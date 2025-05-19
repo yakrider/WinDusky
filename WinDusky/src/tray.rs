@@ -6,7 +6,7 @@ use image::{ImageFormat, ImageReader};
 use std::io::Cursor;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
-use std::sync::{LazyLock, Mutex};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -41,38 +41,44 @@ fn get_dusky_icon() -> Icon {
 // So instead, we make a proxy to pump custom events to the runloop, and store a clone of that ..
 // Then we can send custom events for the menu to act on!
 
-#[derive(Debug)]
+#[derive (Debug)]
 pub enum DuskyEvent {
     MenuAction (MenuEvent),
     AutoOverlayEnable (bool),
     OverlayUpdate { n_active : usize },
     OverridesUpdate { n_overrides : usize },
     FullScreenMode { enabled: bool, effect: Option <&'static str>},
+    GammaState { applied: bool, succeeded: bool, preset: Option <&'static str>},
 }
 
 
-static tray_events_proxy : LazyLock <Mutex <Option <EventLoopProxy <DuskyEvent>>>> = LazyLock::new (|| Mutex::new (None));
+static tray_events_proxy : OnceLock <EventLoopProxy <DuskyEvent>> = OnceLock::new();
 
 
 /// these will inject an internal event into sys-tray event-loop which will update tray-menu checkboxes etc
 pub fn update_full_screen_mode (enabled:bool, effect: Option <&'static str>) {
-    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+    if let Some(proxy) = tray_events_proxy.get() {
         let _ = proxy.send_event ( DuskyEvent::FullScreenMode {enabled, effect} );
     }
 }
 pub fn update_auto_overlay_enable (enabled: bool) {
-    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+    if let Some(proxy) = tray_events_proxy.get() {
         let _ = proxy.send_event ( DuskyEvent::AutoOverlayEnable (enabled) );
     }
 }
 pub fn update_tray__overlay_count (n_active: usize) {
-    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+    if let Some(proxy) = tray_events_proxy.get() {
         let _ = proxy.send_event ( DuskyEvent::OverlayUpdate { n_active } );
     }
 }
 pub fn update_tray__overrides_count (n_overrides: usize) {
-    if let Some(proxy) = tray_events_proxy .lock() .unwrap() .as_ref() {
+    if let Some(proxy) = tray_events_proxy.get() {
         let _ = proxy.send_event ( DuskyEvent::OverridesUpdate { n_overrides } );
+    }
+}
+pub fn update_tray__gamma_state (applied:bool, succeeded:bool, preset: Option <&'static str>) {
+    if let Some(proxy) = tray_events_proxy.get() {
+        let _ = proxy.send_event ( DuskyEvent::GammaState { applied, succeeded, preset } );
     }
 }
 
@@ -83,6 +89,7 @@ const MENU_ACTIVE_OVERLAYS  : &str = "active_overlays";
 const MENU_USER_OVERRIDES   : &str = "user_overrides";
 const MENU_FULL_SCREEN_MODE : &str = "full_screen_mode";
 const MENU_FULL_SCREEN_EFF  : &str = "full_screen_effect";
+const MENU_GAMMA_PRESET     : &str = "gamma_preset";
 const MENU_EDIT_CONF        : &str = "edit_conf";
 const MENU_RESET_CONF       : &str = "reset_conf";
 const MENU_RESTART          : &str = "restart";
@@ -97,6 +104,7 @@ fn menu_disp_str (id:&str) -> &str {
         MENU_USER_OVERRIDES   => "User Overrides : 0",
         MENU_FULL_SCREEN_MODE => "Enable Full Screen Effect",
         MENU_FULL_SCREEN_EFF  => "(Effect: None)",
+        MENU_GAMMA_PRESET     => "Gamma Preset: None",
         MENU_EDIT_CONF        => "Edit Config",
         MENU_RESET_CONF       => "Reset Config",
         MENU_RESTART          => "Restart",
@@ -119,6 +127,7 @@ fn exec_menu_action (id: &str) {
         MENU_USER_OVERRIDES   => { wd.auto.clear_user_overrides(); }
         MENU_FULL_SCREEN_MODE => { wd.post_req__toggle_fs_mode(); }
         MENU_FULL_SCREEN_EFF  => { wd.post_req__toggle_fs_eff(); }
+        MENU_GAMMA_PRESET     => { wd.toggle_gamma_active(); }
         MENU_EDIT_CONF        => { wd.conf.trigger_config_file_edit(); }
         MENU_RESET_CONF       => { wd.conf.trigger_config_file_reset(); }
         MENU_RESTART          => { handle_restart_request(wd); }
@@ -149,6 +158,8 @@ pub fn start_system_tray_monitor() {
     let full_screen_mode = make_menu_check (MENU_FULL_SCREEN_MODE, true, false);
     let full_screen_eff  = make_menu_check (MENU_FULL_SCREEN_EFF, false, false);
 
+    let gamma_preset  = make_menu_check (MENU_GAMMA_PRESET, true, false);
+
     let edit_conf  = make_menu_item (MENU_EDIT_CONF, true);
     let reset_conf = make_menu_item (MENU_RESET_CONF, true);
 
@@ -162,6 +173,7 @@ pub fn start_system_tray_monitor() {
         &elevated, &sep,
         &auto_ov_enabled, &active, &overrides, &sep,
         &full_screen_mode, &full_screen_eff, &sep,
+        &gamma_preset, &sep,
         &edit_conf ,&reset_conf, &sep,
         &restart, &quit
     ] );
@@ -180,7 +192,7 @@ pub fn start_system_tray_monitor() {
 
     let event_loop_proxy = event_loop.create_proxy();
 
-    *tray_events_proxy.lock() .unwrap() = Some (event_loop_proxy.clone());
+    let _ = tray_events_proxy .set (event_loop_proxy.clone());
 
     let proxy = event_loop_proxy.clone();
     MenuEvent::set_event_handler ( Some ( move |event:MenuEvent| {
@@ -189,11 +201,11 @@ pub fn start_system_tray_monitor() {
 
 
     fn update_active_counts (n_active: usize, active: &CheckMenuItem) {
-        active.set_text (format!("Active Overlays: {:?}", n_active));
+        active.set_text (format!("Active Overlays: {n_active:?}"));
         active.set_checked (n_active > 0);
     };
     fn update_overrides_counts (n_overrides: usize, overrides: &CheckMenuItem) {
-        overrides.set_text (format!("User Overrides: {:?}", n_overrides));
+        overrides.set_text (format!("User Overrides: {n_overrides:?}"));
         overrides.set_checked (n_overrides > 0)
     };
 
@@ -218,11 +230,16 @@ pub fn start_system_tray_monitor() {
                 full_screen_mode.set_checked (enabled);
                 full_screen_eff .set_enabled (enabled);
                 full_screen_eff .set_checked (enabled && effect.is_some());
-                full_screen_eff .set_text (format! ("(Effect: {:?})", effect.unwrap_or("None")));
+                full_screen_eff .set_text (format! ("(Effect: {:.50})", effect.unwrap_or("None")));
                 full_screen_mode.set_text (if enabled {"Full Screen Effect Enabled"} else {"Enable Full Screen Effect"});
                 for menu in [&auto_ov_enabled, &active, &overrides] {
                     menu.set_enabled (!enabled)
                 }
+            }
+            DuskyEvent::GammaState {applied, succeeded, preset} => {
+                gamma_preset.set_checked (applied);
+                let prefix = if succeeded {""} else {"❌ <- "};
+                gamma_preset .set_text (format! ("{prefix}Gamma Preset: {:.50}", preset.unwrap_or("None")));
             }
         }
     };
@@ -270,4 +287,3 @@ fn handle_restart_request (wd: &'static WinDusky) {
     });
 
 }
-

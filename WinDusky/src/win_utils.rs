@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::mem::zeroed;
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use std::os::windows::prelude::{OsStrExt, OsStringExt};
 use windows::core::{BOOL, PWSTR};
@@ -17,7 +17,7 @@ use crate::types::Hwnd;
 
 
 
-struct HandleGuard (HANDLE);
+pub struct HandleGuard (HANDLE);
 
 impl Drop for HandleGuard {
     fn drop (&mut self) {
@@ -164,9 +164,9 @@ pub fn get_proc_info (hwnd: Hwnd) -> Option <ProcessInfo> { unsafe {
 
 // we'll use a static rwlocked vec to store enum-windows from callbacks, and a mutex to ensure only one enum-windows call is active
 #[allow(non_upper_case_globals)]
-static enum_hwnds_lock : LazyLock <Arc <Mutex <()>>> = LazyLock::new (|| Arc::new ( Mutex::new(())));
+static enum_hwnds_lock : LazyLock <Mutex <()>> = LazyLock::new (|| Mutex::new(()));
 #[allow(non_upper_case_globals)]
-static enum_hwnds : LazyLock <Arc <RwLock <Vec <Hwnd>>>> = LazyLock::new (|| Arc::new ( RwLock::new (vec!()) ) );
+static enum_hwnds : LazyLock <RwLock <Vec <Hwnd>>> = LazyLock::new (|| RwLock::new (vec!()) );
 
 
 

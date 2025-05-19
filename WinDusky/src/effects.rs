@@ -1,4 +1,3 @@
-#![ allow (dead_code) ]
 
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -8,6 +7,7 @@ use tracing::info;
 use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
 use crate::*;
+
 
 
 
@@ -32,14 +32,19 @@ pub const COLOR_EFF__FALLBACK_DEFAULT : MAGCOLOREFFECT = COLOR_EFF__SIMPLE_INVER
 
 
 
+
 #[derive (Debug)]
 pub struct ColorEffects {
-    pub effects     : HashMap <String, MAGCOLOREFFECT>,
+    //pub effects     : HashMap <String, MAGCOLOREFFECT>,
+    // ^^ can add back if we need by-name lookup .. for now, we'll just put the data into cycle-order vec itself
     pub cycle_order : Vec <(String, MAGCOLOREFFECT)>,
     pub default     : ColorEffect,
 }
 
+
+
 static COLOR_EFFECTS : OnceLock <ColorEffects> = OnceLock::new();
+
 
 impl ColorEffects {
 
@@ -58,29 +63,31 @@ impl ColorEffects {
         if effects.is_empty() {
             let _ = effects .insert ( "DEFAULT".into(), COLOR_EFF__FALLBACK_DEFAULT );
         }
+        info! ("loaded color-effects (alphabetically) : {:?}", effects.keys().sorted());
 
         // next we'll load the defined cycle-order
         let mut cycle_order = conf.get_effects_cycle_order() .into_iter()
             .filter_map (|s| effects .get(&s) .map (|v| (s,*v))) .collect::<Vec<_>>();
 
-        // but it it was empty or not specified, lets just put all defined effects in cycle-order
+        // but if it was empty or not specified, lets just put all defined effects in cycle-order
         if cycle_order.is_empty() {
             for (name, effect) in effects.iter() {
                 cycle_order .push ((name.clone(), *effect));
             }
+            cycle_order .sort_by (|a,b| a.0.cmp(&b.0));
         }
-        info! ("loaded color-effects in cycle-order: {:?}", cycle_order.iter().map(|(s,_)| s).collect::<Vec<_>>());
+        info! ("color-effects cycle-order: {:?}", cycle_order .iter() .map (|(s,_)| s) .collect::<Vec<_>>());
 
         let default_effect = &conf.get_effects_default();
         let default_id = cycle_order .iter().find_position (|(s,_)| s == default_effect) .map (|(idx, _)| idx) .unwrap_or(0);
         let default = ColorEffect (default_id);
         info! ("loaded default color-effect as : {:?}", (default, &default_effect));
 
-        COLOR_EFFECTS .get_or_init ( || ColorEffects { effects, cycle_order, default } )
+        COLOR_EFFECTS .get_or_init ( || ColorEffects { cycle_order, default } )
 
     }
 
-    pub fn get_by_name (&self, name: &str) -> ColorEffect {
+    pub fn find_by_name (&self, name: &str) -> ColorEffect {
         // if the conf specifies a valid default effect, we'll use that, else we'll use the first entry in cycle order
         let idx = self.cycle_order .iter() .find_position (|(s,_)| s == name) .map (|(idx, _)| idx) .unwrap_or_default();
         ColorEffect (idx)
@@ -92,7 +99,7 @@ impl ColorEffects {
 
 
 
-#[derive (Debug, Default, Copy, Clone)]
+#[derive (Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct ColorEffect (pub usize);
 
 #[derive (Debug, Default)]
@@ -100,9 +107,6 @@ pub struct ColorEffectAtomic (AtomicUsize);
 
 
 impl ColorEffect {
-    pub fn new (idx:usize) -> ColorEffect {
-        ColorEffect(idx)
-    }
     pub fn get (&self) -> MAGCOLOREFFECT {
         let cycler = &ColorEffects::instance().cycle_order;
         cycler .get (self.0 % cycler.len()) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
@@ -143,6 +147,5 @@ impl ColorEffectAtomic {
         let new_idx = (prior_idx.unwrap() + cyc_len + incr_plus_one - 1) % cyc_len;
         ColorEffect (new_idx)
     }
-    pub fn cycle_next (&self) -> ColorEffect { self.cycle (true) }
-    pub fn cycle_prev (&self) -> ColorEffect { self.cycle (false) }
+
 }

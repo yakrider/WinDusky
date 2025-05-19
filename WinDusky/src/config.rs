@@ -1,4 +1,4 @@
-#![ allow (non_snake_case, non_upper_case_globals) ]
+#![allow (non_snake_case, non_upper_case_globals)]
 
 use std::ops::Not;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 
 use toml_edit::{DocumentMut, Item, Table, Value};
 
+use crate::gamma;
 use crate::keys::VKey;
 
 
@@ -67,6 +68,14 @@ pub struct ColorEffectSpec {
 }
 
 
+#[derive (Debug, Clone)]
+pub struct GammaPresetSpec {
+    pub preset : String,
+    pub gbc : gamma::GBC,
+    pub color_temp : u32,
+}
+
+
 
 // first some module level helper functions ..
 /// Returns the directory of the currently running executable
@@ -111,29 +120,29 @@ impl Config {
 
 
     fn get_config_file (&self) -> Option<PathBuf> {
-        let app_dir_loc = get_app_dir() .map (|p| p.join(Self::CONF_FILE_NAME));
+        let app_dir_loc = get_app_dir() .map (|p| p.join (Self::CONF_FILE_NAME));
         //println! ("app_dir_loc: {:?}", app_dir_loc);
         //win_apis::write_win_dbg_string (&format!("SWITCHE : app_dir_loc: {:?}", &app_dir_loc));
         if app_dir_loc.as_ref() .is_some_and (|p| is_writeable(p)) {
-            return app_dir_loc
+            return app_dir_loc;
         }
-        let app_data_dir = dirs::data_local_dir() .map (|p| p.join("WinDusky"));
+        let app_data_dir = dirs::data_local_dir() .map (|p| p.join ("WinDusky"));
         if app_data_dir .as_ref() .is_some_and (|p| !p.exists()) {
             let _ = fs::create_dir (app_data_dir.as_ref().unwrap());
         }
-        let app_data_dir_loc = app_data_dir .map (|p| p.join(Self::CONF_FILE_NAME));
+        let app_data_dir_loc = app_data_dir .map (|p| p.join (Self::CONF_FILE_NAME));
         //println! ("app_data_dir_loc: {:?}", app_data_dir_loc);
         //win_apis::write_win_dbg_string (&format!("WINDUSKY : app_data_dir_loc: {:?}", &app_data_dir_loc));
 
         if app_data_dir_loc .as_ref() .is_some_and (|p| is_writeable(p)) {
-            return app_data_dir_loc
+            return app_data_dir_loc;
         }
         None
     }
     pub fn get_log_loc (&self) -> Option<PathBuf> {
-        if let Some(conf_path) = self.get_config_file() {
-            if let Some(conf_loc) = conf_path.parent() {
-                return Some(conf_loc.to_path_buf())
+        if let Some (conf_path) = self.get_config_file() {
+            if let Some (conf_loc) = conf_path.parent() {
+                return Some (conf_loc.to_path_buf());
         } }
         None
     }
@@ -230,7 +239,8 @@ impl Config {
             self.toml.read().unwrap().as_ref() .map (|d| d.to_string()).unwrap_or_default()
         );
     }
-    #[allow (dead_code)] fn write_back_toml_if_changed (&'static self) {
+    #[allow (dead_code)]
+    fn write_back_toml_if_changed (&'static self) {
         let conf_path = self.get_config_file();
         if conf_path.is_none() { return }
         let toml_str = self.toml.read().unwrap().as_ref() .map (|d| d.to_string()) .unwrap_or_default();
@@ -327,7 +337,7 @@ impl Config {
         None
     }
 
-    pub fn get_hotkey__dusky_toggle (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__dusky_toggle") }
+    pub fn get_hotkey__effect_toggle (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__effect_toggle") }
 
     pub fn get_hotkey__fullscreen_toggle (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__fullscreeen_toggle") }
 
@@ -337,7 +347,9 @@ impl Config {
     pub fn get_hotkey__clear_overlays  (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overlays") }
     pub fn get_hotkey__clear_overrides (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overrides") }
 
-
+    pub fn get_hotkey__gamma_preset_toggle (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__gamma_preset_toggle") }
+    pub fn get_hotkey__next_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__next_gamma_preset") }
+    pub fn get_hotkey__prev_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__prev_gamma_preset") }
 
 
     pub fn get_auto_overlay_luminance__threshold (&self) -> u8 {
@@ -440,6 +452,41 @@ impl Config {
         self.get_string ("effects_default")
     }
 
+
+
+
+    pub fn get_gamma_cycle_order (&self) -> Vec<String> {
+        self.get_string_array ("gamma_presets_cycle_order")
+    }
+
+    pub fn get_gamma_default (&self) -> String {
+        self.get_string ("gamma_preset_default")
+    }
+
+    pub fn check_flag__gamma_at_startup (&self) -> bool {
+        self.check_flag ("apply_gamma_preset_at_startup")
+    }
+
+    fn parse_gamma_preset (v: &Value) -> Option <GammaPresetSpec> {
+        let entry = v .as_inline_table()?;
+        let preset     = entry .get ("preset")     .and_then (|s| s.as_str()     .map(|s| s.to_string()))?;
+        let gamma      = entry .get ("gamma")      .and_then (|v| v.as_float()   .map(|f| f as f32))?;
+        let bright     = entry .get ("brightness") .and_then (|v| v.as_float()   .map(|f| f as f32))?;
+        let contrast   = entry .get ("contrast")   .and_then (|v| v.as_float()   .map(|f| f as f32))?;
+        let color_temp = entry .get ("color_temp") .and_then (|v| v.as_integer() .map(|i| i as u32))?;
+
+        let gbc = gamma::GBC::new (gamma, bright, contrast);
+        Some ( GammaPresetSpec { preset, gbc, color_temp } )
+    }
+
+    pub fn get_gamma_presets (&self) -> Vec <GammaPresetSpec> {
+        if let Some(toml) = self.toml.read().unwrap().as_ref() {
+            return toml .get ("gamma_presets") .and_then (|t| t.as_array())
+                .map (|t| t.iter() .filter_map (Self::parse_gamma_preset) .collect())
+                .unwrap_or_default();
+        }
+        vec![]
+    }
 
 
 }

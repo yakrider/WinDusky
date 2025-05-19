@@ -7,7 +7,7 @@ use windows::Win32::Foundation::HWND;
 
 
 // we'll define our own new-type of Hwnd mostly coz HWND doesnt implement Debug, Hash etc
-# [ derive (Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash) ]
+#[derive (Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Hwnd (pub isize);
 
 impl Hwnd {
@@ -37,7 +37,7 @@ impl std::fmt::Debug for Hwnd {
 
 
 // and the atomic version of Hwnd for storage
-# [ derive (Debug, Default) ]
+#[derive (Debug, Default)]
 pub struct HwndAtomic (AtomicIsize);
 
 impl HwndAtomic {
@@ -69,7 +69,7 @@ impl From <HwndAtomic> for HWND {
 
 /// representation for all our atomic flags for states mod-states, modifier-keys, mouse-btn-state etc <br>
 /// (Note that this uses Acquire/Release memory ordering semantics, and shouldnt be used as lock/mutex etc)
-# [ derive (Debug, Default) ]
+#[derive (Debug, Default)]
 pub struct Flag (AtomicBool);
 // ^^ simple sugar that helps reduce clutter in code
 

@@ -5,7 +5,7 @@ use std::hash::Hash;
 use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
 
 /// An enumeration of errors that may occur while using the crate.
-#[derive(Error, Debug)]
+#[derive (Error, Debug)]
 pub enum WHKError {
     #[error("Hotkey registration failed. Hotkey is already in use.")]
     RegistrationFailed,
@@ -19,7 +19,7 @@ pub enum WHKError {
 /// # See Also
 /// - [Microsoft Virtual-Key Codes](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes)
 ///
-#[derive(Debug, Clone, Copy)]
+#[derive (Debug, Clone, Copy)]
 pub enum VKey {
 
     Back,
@@ -929,10 +929,10 @@ impl std::fmt::Display for VKey {
             VKey::Y => "VK_Y",
             VKey::Z => "VK_Z",
 
-            VKey::CustomKeyCode(vk) => return write!(f, "Custom(0x{:X})", vk),
+            VKey::CustomKeyCode(vk) => return write!(f, "Custom(0x{vk:X})"),
             
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 

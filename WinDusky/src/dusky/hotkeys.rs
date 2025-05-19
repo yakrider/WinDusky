@@ -1,25 +1,30 @@
 
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::config::HotKey;
 use crate::dusky::WinDusky;
 use crate::effects::ColorEffect;
 use crate::tray;
-use crate::types::*;
 
-const HOTKEY_ID__TOGGLE            : usize = 1;
-const HOTKEY_ID__FULLSCREEN_TOGGLE : usize = 2;
+const HOTKEY_ID__FULLSCREEN_TOGGLE : usize = 1;
+
+const HOTKEY_ID__EFFECT_TOGGLE     : usize = 2;
 const HOTKEY_ID__NEXT_EFFECT       : usize = 3;
 const HOTKEY_ID__PREV_EFFECT       : usize = 4;
+
 const HOTKEY_ID__CLEAR_OVERLAYS    : usize = 5;
 const HOTKEY_ID__CLEAR_OVERRIDES   : usize = 6;
 
-const HOTKEY_ID_MAX_REGISTERED : usize = HOTKEY_ID__CLEAR_OVERRIDES;
+const HOTKEY_ID__GAMMA_PRESET_TOGGLE : usize = 7;
+const HOTKEY_ID__GAMMA_PRESET_NEXT   : usize = 8;
+const HOTKEY_ID__GAMMA_PRESET_PREV   : usize = 9;
+
+
+const HOTKEY_ID_MAX_REGISTERED : usize = HOTKEY_ID__GAMMA_PRESET_PREV;
 
 
 
@@ -33,14 +38,18 @@ impl WinDusky {
                 error! ("Failed to register hotkey id:{:?} .. {:?}", id, GetLastError());
             }
         } }
-        self.conf.get_hotkey__dusky_toggle()      .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__TOGGLE as _));
         self.conf.get_hotkey__fullscreen_toggle() .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__FULLSCREEN_TOGGLE as _));
+        self.conf.get_hotkey__effect_toggle()     .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__EFFECT_TOGGLE as _));
 
         self.conf.get_hotkey__next_effect() .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__NEXT_EFFECT as _));
         self.conf.get_hotkey__prev_effect() .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__PREV_EFFECT as _));
 
         self.conf.get_hotkey__clear_overlays()  .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__CLEAR_OVERLAYS as _));
         self.conf.get_hotkey__clear_overrides() .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__CLEAR_OVERRIDES as _));
+
+        self.conf.get_hotkey__gamma_preset_toggle() .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__GAMMA_PRESET_TOGGLE as _));
+        self.conf.get_hotkey__next_gamma_preset()   .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__GAMMA_PRESET_NEXT as _));
+        self.conf.get_hotkey__prev_gamma_preset()   .into_iter().for_each (|hk| register_hotkey (hk, HOTKEY_ID__GAMMA_PRESET_PREV as _));
     }
 
     pub(super) fn un_register_hotkeys (&self) {
@@ -60,13 +69,20 @@ impl WinDusky {
 
     pub(super) fn handle_hotkeys (&self, hotkey: usize) {
 
-        // we'll split handling into those for mode toggle, and for each modes
+        // we'll split handling into blocks based on whether they care about modes etc
 
-        // .. first the global full-screen mode toggle
-        if hotkey == HOTKEY_ID__FULLSCREEN_TOGGLE {
-            self.toggle_full_screen_mode();
-            return;
+        let mut done = true;
+
+        // first lets handle hotkeys that are global regardless of full-screen or per-hwnd effects mode
+        match hotkey {
+            HOTKEY_ID__GAMMA_PRESET_TOGGLE => { self.toggle_gamma_active(); }
+            HOTKEY_ID__GAMMA_PRESET_NEXT   => { self.cycle_gamma_preset (true); }
+            HOTKEY_ID__GAMMA_PRESET_PREV   => { self.cycle_gamma_preset (false); }
+            HOTKEY_ID__FULLSCREEN_TOGGLE   => { self.toggle_full_screen_mode(); }
+            _ => { done = false; }
         }
+        if done { return }
+
 
         // then handle hotkeys for full screen mode
         if self.check_fs_mode() {
@@ -74,7 +90,7 @@ impl WinDusky {
                 tray::update_full_screen_mode (enabled, eff.map(|e| e.name()))
             }
             match hotkey {
-                HOTKEY_ID__TOGGLE         => { update_tray (true,  self.fs_overlay .toggle_effect() ) }
+                HOTKEY_ID__EFFECT_TOGGLE  => { update_tray (true,  self.fs_overlay .toggle_effect() ) }
                 HOTKEY_ID__NEXT_EFFECT    => { update_tray (true,  self.fs_overlay .apply_effect_next() ) }
                 HOTKEY_ID__PREV_EFFECT    => { update_tray (true,  self.fs_overlay .apply_effect_prev() ) }
                 HOTKEY_ID__CLEAR_OVERLAYS => { update_tray (false, self.fs_overlay .unapply_effect() ) }
@@ -101,7 +117,7 @@ impl WinDusky {
 
         // and finally we have can process the per-hwnd hotkeys that need a hwnd target
         match hotkey {
-            HOTKEY_ID__TOGGLE => {
+            HOTKEY_ID__EFFECT_TOGGLE => {
                 if self .overlays .read().unwrap() .contains_key (&target) {
                     self.remove_overlay (target);
                     self.auto.register_user_unapplied (target);

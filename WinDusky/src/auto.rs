@@ -1,4 +1,4 @@
-#![ allow (non_camel_case_types, non_snake_case, non_upper_case_globals) ]
+#![allow (non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 use itertools::Itertools;
 use tracing::{info, warn};
@@ -117,7 +117,7 @@ impl AutoOverlay {
         let mut rules : HashMap <RulesKey, RulesValue> = HashMap::new();
         for exe in conf.get_auto_overlay_exes() {
             //tracing::debug! ("loading auto-overlay exe rule : {:?}", exe);
-            let effect = exe.effect .as_ref() .map (|s| effects.get_by_name(s));
+            let effect = exe.effect .as_ref() .map (|s| effects.find_by_name(s));
             let _ = rules .insert (
                 RulesKey::Rule_Exe (exe.exe),
                 RulesValue { enabled: true, effect, excl_exes: None }
@@ -126,7 +126,7 @@ impl AutoOverlay {
         for class in conf.get_auto_overlay_window_classes() {
             //tracing::debug! ("loading auto-overlay exe rule : {:?}", class);
             let excl_exes =  (!class.exclusion_exes.is_empty()) .then_some (class.exclusion_exes.into_iter().collect::<HashSet<String>>());
-            let effect = class.effect .as_ref() .map (|s| effects.get_by_name(s));
+            let effect = class.effect .as_ref() .map (|s| effects.find_by_name(s));
             let _ = rules .insert (
                 RulesKey::Rule_ClassId (class.class),
                 RulesValue { enabled: true, effect, excl_exes }

@@ -235,7 +235,7 @@ pub fn debug_display_hwnd_capture(hwnd: Hwnd, use_bitblt: bool) {
             })
             .collect();
 
-        let title = format! ("Debug Capture: {:?} ({}x{}) - via {}", hwnd, width, height, capture_method);
+        let title = format! ("Debug Capture: {hwnd:?} ({width}x{height}) - via {capture_method}");
 
         let mut window = match Window::new (&title, width as _, height as _, Default::default()) {
             Ok(win) => win,

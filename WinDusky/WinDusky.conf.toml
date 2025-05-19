@@ -3,6 +3,9 @@
 ## Config settings file for WinDusky appliation .. repository: https://github.com/yakrider/WinDusky
 # This file uses the toml format: https://toml.io
 #
+# Note that in toml format, root keys must be listed before any tables with square-brackets are started
+# So for instance, below, the [[gamma_presets]] and [[effects]] must come at the end (unless defining them as inline tables instead)
+#
 # The application will look for this file (WinDusky.conf.toml) in the same directory from which it is running (if the location is writeable)
 # If that location is not writeable, the config file will pick  ~/AppData/Local/WinDusky/ as conf file location
 # Upon startup, if the conf file is not present in the location selected as above, a default conf file will be created in that location
@@ -12,9 +15,10 @@
 
 
 
+
 # WinDusky conf version string .. this is used to check compatibility and print warnings/errors
 # Upon upgrading the application, and updating any user configs here as desired, can update this version string to remove warning printouts
-dusky_conf_version = 0.18
+dusky_conf_version = 0.21
 
 
 
@@ -29,6 +33,10 @@ logging_level = "INFO"
 
 
 
+
+
+# --- WinDusky Hotkeys Configuration ---
+
 # Hotkey to toggle WinDusky on currectly active window, specified as a string ..
 # Hotkey specification are in keys.rs file in this repo .. they are case-insensitive and summarized below :
 #   Alt, Shift, Ctrl, Win, A-Z, 0-9, F1-F24, Comma, Period, Plus, Minus, SemiColon, Slash, Backslash etc,
@@ -37,7 +45,7 @@ logging_level = "INFO"
 #
 # Note: Updates to this config are ONLY picked up upon restarting (not just reloading) the application
 # The default is "Alt+Win+I" .. I for 'invert' .. specified as { key = "I", modifiers = ["Alt", "Win"] }
-hotkey__dusky_toggle = { key = "I", modifiers = ["Alt", "Win"] }
+hotkey__effect_toggle = { key = "I", modifiers = ["Alt", "Win"] }
 
 
 # Hotkey to toggle dusky color effect mode to 'FullScreen' rather than per window
@@ -56,14 +64,71 @@ hotkey__prev_effect = { key = "Comma",  modifiers = ["Alt", "Win"] }
 hotkey__clear_overrides = { key = "Insert", modifiers = ["Alt", "Win"] }
 
 # Hotkey to clear all active overlays (will also clear all user overrides)
-hotkey__clear_overlays = { key = "Delete", modifiers = ["Alt", "Win"] }
+hotkey__clear_overlays = { key = "F12", modifiers = ["Alt", "Win"] }
+
+
+
+# Hotkey to toggle gamma preset between applying current preset or resetting gamma-ramp to default
+# The default is "Win+Shift+G" .. G for 'gamma'
+hotkey__gamma_preset_toggle = { key = "G", modifiers = ["Win", "Shift"] }
+
+
+# Hotkey to cycle through (next and previous) gamma-presets in the gamma-presets list
+# The defaults are Win+Shift+Period for Next, and Win+Shift+Comma for Previous gamma preset
+hotkey__next_gamma_preset = { key = "Period", modifiers = ["Win", "Shift"] }
+hotkey__prev_gamma_preset = { key = "Comma",  modifiers = ["Win", "Shift"] }
 
 
 
 
 
 
-# --- Auto Overlay Configuration ---
+# --- Gamma Ramp Presets Configuration ---
+
+# List of gamma ramp preset names defining the order for cycling (using Win+Shift+Period/Comma)
+# Names must match the keys defined in the [gamma_presets] table below.
+# Users can reorder, add, or remove names from this list (as long as they exist in [gamma_presets] table).
+
+gamma_presets_cycle_order = [
+    "Normal",
+    "Dark",
+    "Darker",
+    "Bright",
+]
+
+# The default gamma-ramp preset to use (from those defined in teh table) if none is specified
+# The suggested default is "Dark"
+# The default must be an entry also in the cycle_order list
+# If this is not specified, and/or does not match presets in the list, the first preset in the cycle list will be used
+# Further, if the cycle list itself is empy or unspecified, the "Normal" gamma ramp will be used
+gamma_preset_default = "Dark"
+
+
+# Setting apply_gamma_preset_at_startup to true will apply the gamma_preset_default above when WinDusky starts-up
+apply_gamma_preset_at_startup = true
+
+
+# Definition of gamma-preset entries (including the gamma, brightness, contrast, and color-temp values)
+# Each preset has a name and values for gamma, brightness, contrast (GBC), and color-temp values
+# The Gamma and Contrast are floating point values around 1.0, while Brightness is float value around 0.0
+# The color-temp is in K, and the default is 6500 as conventional. A night-mode (reddish) color-temp might be around 5800
+# When applying the preset, first the GBC ramp is calculated, then the color-temp effect is blended on top
+#
+# Note that the simple GUI utility Gamgee (github.com/yakrider/Gamgee) can be used to tweak/explore the values below
+#
+gamma_presets = [
+    { preset = "Normal",  gamma = 1.00,  brightness =  0.00,  contrast = 1.00,  color_temp = 6500 },
+    { preset = "Dark",    gamma = 1.10,  brightness = -0.25,  contrast = 0.90,  color_temp = 6000 },
+    { preset = "Darker",  gamma = 1.20,  brightness = -0.50,  contrast = 0.80,  color_temp = 6000 },
+    { preset = "Bright",  gamma = 1.15,  brightness =  0.08,  contrast = 1.00,  color_temp = 6500 }
+]
+
+
+
+
+
+
+# --- Color-Effects Auto-Overlay Configuration ---
 
 # Note: The 'effect' field for rules defined here can refer to names defined in the [[effects]] tables.
 # Use "default" to apply the effect specified in 'effects_default'
@@ -102,9 +167,9 @@ auto_overlay_luminance__exclusion_exes = [
 
 
 # List of exes for which WinDusky should automatically try to apply color effect as specified
-# If not color effect is specified, the default color effect will be applied
+# If no color effect is specified, the default color effect will be applied
 # Each entry must have the 'exe' field, and can optionally specify 'effect'
-# The default here, if not using luminance mothod, is to have : "msinfo32.exe", "regedit.exe", "mmc.exe",
+# The default here, if not using luminance mothod, is to have : "mmc.exe", "regedit.exe", "msinfo32.exe",
 auto_overlay_exes = [
 #    { exe = "mmc.exe" },
 #    { exe = "regedit.exe" },
@@ -124,6 +189,7 @@ auto_overlay_window_classes = [
 #        exclusion_exes = ["notepad++.exe", "SystemInformer.exe"]
 #    },
 ]
+
 
 
 
@@ -189,6 +255,10 @@ effects_default = "Smart Inversion V3"
 # Each effect has a name and a transform matrix (5x5, row-major, 25 float values).
 # Users can add their own custom effects here. Ensure the name is unique and the
 # transform array has exactly 25 floating-point numbers.
+#
+# Note that in toml format, root keys must be listed before any tables with square-brackets are started
+# So these [[effects]] tables MUST come at the end after all other root-level keys above
+#
 
 [[effects]]
 effect = "Identity"

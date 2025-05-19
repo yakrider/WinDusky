@@ -7,13 +7,16 @@
 
 
 use std::thread;
+use std::time::Duration;
 
 
 mod types;
 mod keys;
-mod effects;
-mod config;
 mod dusky;    // <- sub-mods: overlay, hooks, hotkeys
+mod config;
+mod effects;
+mod presets;
+mod gamma;
 mod auto;
 mod luminance;
 mod occlusion;
@@ -22,19 +25,24 @@ mod win_utils;
 
 
 
-
 fn main() {
 
-    let wd = dusky::WinDusky::init() .expect("ERROR initialising WinDusky");
+    let conf = config::Config::instance();
 
-    // we want the non-blocking log-appender guard to be here in main, to ensure any pending logs get flushed upon crash etc
-    let _guard = wd.conf.setup_log_subscriber();
+    // first we want to load/init the config, then get the non-blocking log-appender guard here in main
+    // this ensures any pending logs get flushed when the guard scope is dropped (e.g force exit, crash etc)
+    let _guard = conf.setup_log_subscriber();
+
+    tracing::info! ("Initializing WinDusky ...");
+    let wd = dusky::WinDusky::init(conf) .expect("ERROR initialising WinDusky");
 
     tracing::info! ("Starting WinDusky ...");
 
     thread::spawn (|| {
         tray::start_system_tray_monitor();
     });
+    thread::sleep (Duration::from_millis(100));
+    // ^^ we'll give a bit for tray to come up so it can absorb changes from dusky-startup below
 
     wd .start_win_dusky() .expect("ERROR running WinDusky");
 

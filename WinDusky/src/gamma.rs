@@ -179,7 +179,7 @@ pub fn get_monitor_dc (device_name: &str) -> Option<HDC> { unsafe {
 
 /// Set the gamma ramp for a given DC (expects ramp as [[u16; 256]; 3])
 pub fn set_gamma_ramp_for_dc (hdc: HDC, ramp: &[[u16; 256]; 3]) -> bool { unsafe {
-    SetDeviceGammaRamp (hdc, ramp.as_ptr() as *const _) .as_bool()
+    SetDeviceGammaRamp (hdc, ramp.as_ptr() as _) .as_bool()
 } }
 
 /// Get the current gamma ramp from the OS for a given DC

@@ -1,7 +1,8 @@
 
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HC_ACTION, WH_MOUSE_LL, WM_MOUSEMOVE};
 use crate::dusky::WinDusky;
 use crate::types::Hwnd;
 use crate::win_utils;
@@ -9,7 +10,7 @@ use crate::win_utils;
 
 impl WinDusky {
 
-    pub(super) fn setup_win_hooks (&self) { unsafe {
+    pub(super) fn setup_win_events_hooks (&self) { unsafe {
 
         // Note this this must be called from some thread that will be monitoring its msg queue
         // Here, we'll setup a win-event hook to monitor fgnd change so we can maintain the overlay z-ordering
@@ -37,6 +38,20 @@ impl WinDusky {
                 0x8017 : EVENT_OBJECT_CLOAKED
                 0x8018 : EVENT_OBJECT_UNCLOAKED
          */
+
+
+        // we'll first setup simple callback handling for our win-event hook then register all callbacks
+
+        unsafe extern "system" fn win_event_proc (
+            _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, id_object: i32,
+            _id_child: i32, _event_thread: u32, _event_time: u32,
+        ) {
+            // we'll filter out non-window level events and pass up the rest
+            use windows::Win32::UI::WindowsAndMessaging::OBJID_WINDOW;
+            if id_object != OBJID_WINDOW.0 { return; }
+            WinDusky::instance() .handle_win_hook_event (hwnd.into(), event);
+        }
+
 
         let _ = SetWinEventHook (0x0003, 0x0003, None, Some(win_event_proc), 0, 0, 0 );
         let _ = SetWinEventHook (0x0008, 0x000B, None, Some(win_event_proc), 0, 0, 0 );
@@ -127,19 +142,26 @@ impl WinDusky {
         }
     }
 
+
+
+
+    // Mouse hook for pointer movement
+    pub fn setup_pointer_move_hook (&self) { unsafe {
+        use windows::Win32::Foundation::{LRESULT};
+
+        unsafe extern "system" fn mouse_proc (
+            code: i32, wparam: WPARAM, lparam: LPARAM
+        ) -> LRESULT {
+            if code == HC_ACTION as i32  &&  wparam.0 == WM_MOUSEMOVE as usize {
+                let wd = WinDusky::instance();
+                if wd.mag_overlay.active.is_set() { wd.post_req__mag_refresh(); }
+            }
+            CallNextHookEx (None, code, wparam, lparam)
+        }
+
+        let _ = SetWindowsHookExW (WH_MOUSE_LL, Some(mouse_proc), None, 0);
+
+    } }
+
+
 }
-
-
-
-
-// Callback handling for our win-event hook
-unsafe extern "system" fn win_event_proc (
-    _hook: HWINEVENTHOOK, event: u32, hwnd: HWND, id_object: i32,
-    _id_child: i32, _event_thread: u32, _event_time: u32,
-) {
-    // we'll filter out non-window level events and pass up the rest
-    use windows::Win32::UI::WindowsAndMessaging::OBJID_WINDOW;
-    if id_object != OBJID_WINDOW.0 { return; }
-    WinDusky::instance() .handle_win_hook_event (hwnd.into(), event);
-}
-

@@ -7,7 +7,7 @@ use std::sync::{LazyLock, Mutex, RwLock};
 
 use std::os::windows::prelude::{OsStrExt, OsStringExt};
 use windows::core::{BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH, POINT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::*;
@@ -40,6 +40,14 @@ pub struct ProcessInfo {
 pub fn wide_string (s: &str) -> Vec<u16> {
     OsStr::new(s) .encode_wide() .chain (std::iter::once(0)) .collect()
 }
+
+
+pub fn get_pointer_loc () -> POINT { unsafe {
+    let mut point = POINT::default();
+    let _ = GetCursorPos (&mut point);
+    point
+} }
+
 
 
 pub fn win_check_if_topmost (hwnd: Hwnd) -> bool { unsafe {

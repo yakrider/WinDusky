@@ -18,7 +18,7 @@
 
 # WinDusky conf version string .. this is used to check compatibility and print warnings/errors
 # Upon upgrading the application, and updating any user configs here as desired, can update this version string to remove warning printouts
-dusky_conf_version = 0.21
+dusky_conf_version = 0.22
 
 
 
@@ -68,9 +68,23 @@ hotkey__clear_overlays = { key = "F12", modifiers = ["Alt", "Win"] }
 
 
 
+
+# Hotkey to toggle screen magnification effect between applying current level or resetting to no magnification
+# The default is "Win+Ctrl+I"
+hotkey__screen_magnification_toggle = { key = "I", modifiers = ["Win", "Ctrl"] }
+
+
+# Hotkey to cycle through (next and previous) magnification-levels .. each level increases magnificaiton by 25% upto 15x
+# The defaults are Win+Ctrl+Period for Next, and Win+Ctrl+Comma for Previous gamma preset
+hotkey__next_magnification_level = { key = "Period", modifiers = ["Win", "Ctrl"] }
+hotkey__prev_magnification_level = { key = "Comma",  modifiers = ["Win", "Ctrl"] }
+
+
+
+
 # Hotkey to toggle gamma preset between applying current preset or resetting gamma-ramp to default
-# The default is "Win+Shift+G" .. G for 'gamma'
-hotkey__gamma_preset_toggle = { key = "G", modifiers = ["Win", "Shift"] }
+# The default is "Win+Shift+I"
+hotkey__gamma_preset_toggle = { key = "I", modifiers = ["Win", "Shift"] }
 
 
 # Hotkey to cycle through (next and previous) gamma-presets in the gamma-presets list

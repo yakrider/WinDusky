@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::dusky::WinDusky;
 use crate::effects::{ColorEffect, ColorEffects};
 use crate::luminance::calculate_avg_luminance;
-use crate::tray;
+use crate::tray::*;
 use crate::types::*;
 use crate::win_utils::*;
 
@@ -150,7 +150,7 @@ impl AutoOverlay {
 
     pub fn toggle_auto_overlay_enabled (&self) -> bool {
         let enabled = !self.auto_overlay_enabled.toggle();
-        tray::update_auto_overlay_enable (enabled);
+        update_tray__auto_overlay_enable (enabled);
         enabled
     }
 
@@ -164,14 +164,14 @@ impl AutoOverlay {
             eval_cache .insert (hwnd, *effect_overriden);
         }
         let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
-        tray::update_tray__overrides_count(n_overrides);
+        update_tray__overrides_count(n_overrides);
     }
     pub fn clear_user_overrides (&self) {
         let mut eval_cache = self.eval_cache.write().unwrap();
         let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
         info! ("Clearing all {:?} user-initiated rules overrides (and {:?} hwnd eval results)!", n_overrides, eval_cache.len());
         eval_cache .clear();
-        tray::update_tray__overrides_count(0);
+        update_tray__overrides_count(0);
     }
 
 

@@ -120,13 +120,10 @@ impl GammaPresetAtomic {
 
     pub fn cycle (&self, forward: bool) -> GammaPreset {
         let cyc_len = GammaPresets::instance().cycle_order.len();
-        // now there no adding negatives for usize, but we can substract positives, hence using incr+1 below
-        let incr_plus_one = if forward { 2 } else { 0 };   // either [1 or -1], then add 1
-        let prior_idx = self.0.fetch_update (
-            Ordering::AcqRel, Ordering::Acquire,
-            |cur| Some ((cur + cyc_len + incr_plus_one - 1) % cyc_len)
-        );
-        let new_idx = (prior_idx.unwrap() + cyc_len + incr_plus_one - 1) % cyc_len;
+        let incr = if forward { cyc_len + 1 } else { cyc_len - 1 };
+        let update_fn = |cur| Some ((cur + incr) % cyc_len);
+        let prior_idx = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
+        let new_idx = update_fn (prior_idx.unwrap_or_else(|e| e)) .unwrap();
         GammaPreset (new_idx)
     }
 

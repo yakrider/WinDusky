@@ -1,5 +1,4 @@
 
-use std::sync::OnceLock;
 use tracing::{error, info};
 
 use windows::core::PCWSTR;
@@ -7,11 +6,11 @@ use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINST
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, MapWindowPoints, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Magnification::{MagSetColorEffect, MagSetFullscreenColorEffect, MagSetWindowSource, MAGCOLOREFFECT, WC_MAGNIFIERW};
+use windows::Win32::UI::Magnification::{MagSetColorEffect, MagSetWindowSource, MAGCOLOREFFECT, WC_MAGNIFIERW};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dusky::WinDusky;
-use crate::effects::{ColorEffect, ColorEffectAtomic, ColorEffects, COLOR_EFF__IDENTITY};
+use crate::effects::{ColorEffect, ColorEffectAtomic};
 use crate::occlusion::Rect;
 use crate::types::{Flag, Hwnd};
 use crate::win_utils::*;
@@ -26,11 +25,19 @@ const HOST_WINDOW_CLASS_NAME : &str = "WinDuskyOverlayWindowClass";
 const HOST_WINDOW_TITLE      : &str = "WinDusky Overlay Host";
 
 
+
 pub unsafe fn register_overlay_class () -> Result <(), String> {
 
     let Ok(instance) = GetModuleHandleW(None) else {
         return Err (format!("GetModuleHandleW failed with error: {:?}", GetLastError()));
     };
+
+    // we'll just do default message handling for host-window window-proc
+    extern "system" fn host_window_proc (
+        host: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
+    ) -> LRESULT { unsafe {
+        DefWindowProcW (host, msg, wparam, lparam)
+    } }
 
     let wc = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -59,13 +66,6 @@ pub unsafe fn register_overlay_class () -> Result <(), String> {
 
 
 
-#[derive (Debug, Default)]
-pub struct FullScreenOverlay {
-    pub enabled : Flag,
-    pub active  : Flag,
-    pub effect  : ColorEffectAtomic,
-}
-
 
 #[derive (Debug, Default)]
 pub struct Overlay {
@@ -82,76 +82,6 @@ pub struct Overlay {
 }
 
 
-
-impl FullScreenOverlay {
-
-    pub(super) fn instance() -> &'static FullScreenOverlay {
-        static INSTANCE : OnceLock <FullScreenOverlay> = OnceLock::new();
-        INSTANCE .get_or_init ( ||
-            FullScreenOverlay {
-                enabled : Flag::default(),
-                active  : Flag::default(),
-                effect  : ColorEffectAtomic::new (ColorEffects::instance().default),
-            }
-        )
-    }
-
-    /// toggles full screen effect enabled state and returns the updated state
-    pub(super) fn toggle (&self) -> bool {
-        let enabled = !self.enabled.toggle();
-        self.active .store (enabled);
-        info! ("Setting FULL-SCREEN_OVERLAY mode to : {} !!", if enabled {"ON"} else {"OFF"} );
-        self.apply_color_effect ( if enabled { self.effect.get() } else { COLOR_EFF__IDENTITY } );
-        enabled
-    }
-    pub(super) fn set_enabled (&self, enabled: bool) {
-        let prior = self.enabled.swap(enabled);
-        self.active .store (enabled);
-        if prior != enabled {
-            info! ("Setting FULL-SCREEN_OVERLAY mode to : {} !!", if enabled {"ON"} else {"OFF"} );
-            self.apply_color_effect ( if enabled { self.effect.get() } else { COLOR_EFF__IDENTITY } );
-        }
-    }
-
-    /// toggles the effect applied full screen (does not affect the enabled state itself!)
-    pub(super) fn toggle_effect (&self) -> Option<ColorEffect> {
-        if self.active.is_set() {
-            self.unapply_effect();
-            return None
-        }
-        Some (self.apply_effect_cycled (None))
-    }
-    pub(super) fn apply_effect_next (&self) -> Option<ColorEffect> {
-        if self.active.is_clear() { return None }
-        Some ( self.apply_effect_cycled (Some(true)))
-    }
-    pub(super) fn apply_effect_prev (&self) -> Option<ColorEffect> {
-        if self.active.is_clear() { return None }
-        Some (self.apply_effect_cycled (Some(false)))
-    }
-
-    pub(super) fn unapply_effect (&self) -> Option<ColorEffect> {
-        let prior = (&self.effect).into();
-        info! ("Clearing Full Screen Overlay color effect .. (the mode remains active)!");
-        self.active.clear();
-        self.apply_color_effect (COLOR_EFF__IDENTITY);
-        Some (prior)
-    }
-
-    fn apply_color_effect (&self, effect: MAGCOLOREFFECT) { unsafe {
-        if ! MagSetFullscreenColorEffect (&effect as *const _ as _) .as_bool() {
-            error! ("Error settting Fullscreen Color Effect : {:?}", GetLastError());
-        }
-    } }
-    fn apply_effect_cycled (&self, forward: Option<bool>) -> ColorEffect {
-        let effect = if let Some(forward) = forward { self.effect.cycle (forward) } else { (&self.effect).into() };
-        info! ("Setting Full Screen Overlay Color Effect to : {:?}", effect);
-        self.apply_color_effect (effect.get());
-        self.active.set();
-        effect
-    }
-
-}
 
 
 impl Overlay {
@@ -304,6 +234,7 @@ impl Overlay {
     } }
     fn apply_effect_cycled (&self, forward: bool) -> ColorEffect {
         let effect = self.effect.cycle (forward);
+        info! ("Setting Color Effect on {:?} to : {:?}", self.target, effect.name());
         self.apply_color_effect (effect.get());
         effect
     }
@@ -311,15 +242,3 @@ impl Overlay {
     pub(super) fn apply_effect_prev (&self) -> ColorEffect { self.apply_effect_cycled (false) }
 
 }
-
-
-
-
-// Window Procedure for the Host Window
-unsafe extern "system" fn host_window_proc (
-    host: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
-) -> LRESULT {
-    // we'll just leave default message handling
-    DefWindowProcW (host, msg, wparam, lparam)
-}
-

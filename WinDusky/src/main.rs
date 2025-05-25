@@ -12,7 +12,7 @@ use std::time::Duration;
 
 mod types;
 mod keys;
-mod dusky;    // <- sub-mods: overlay, hooks, hotkeys
+mod dusky;    // <- sub-mods: hooks, hotkeys, overlay_effect, overlay_fs_effect, overlay_mag
 mod config;
 mod effects;
 mod presets;
@@ -36,7 +36,6 @@ fn main() {
     tracing::info! ("Initializing WinDusky ...");
     let wd = dusky::WinDusky::init(conf) .expect("ERROR initialising WinDusky");
 
-    tracing::info! ("Starting WinDusky ...");
 
     thread::spawn (|| {
         tray::start_system_tray_monitor();
@@ -44,6 +43,7 @@ fn main() {
     thread::sleep (Duration::from_millis(100));
     // ^^ we'll give a bit for tray to come up so it can absorb changes from dusky-startup below
 
+    tracing::info! ("Starting WinDusky ...");
     wd .start_win_dusky() .expect("ERROR running WinDusky");
 
 }

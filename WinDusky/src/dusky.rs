@@ -12,26 +12,34 @@ use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CON
 use windows::Win32::UI::Magnification::{MagInitialize, MagUninitialize};
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage, PostThreadMessageW, SetTimer, MSG, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER};
 
-use crate::{*, types::*};
-use crate::effects::ColorEffect;
 
-mod overlay;
 mod hooks;
 mod hotkeys;
+mod overlay_effect;
+mod overlay_fs_effect;
+mod overlay_mag;
 
-use overlay::{FullScreenOverlay, Overlay};
+pub use overlay_effect::{Overlay};
+pub use overlay_fs_effect::FullScreenOverlay;
+pub use overlay_mag::{MagEffect, MagOverlay, MAG_EFFECT_DEFAULT, MAG_EFFECT_IDENTITY};
+
+use crate::{*, types::*};
+use crate::effects::{ColorEffect};
 use crate::presets::{GammaPresets, GammaPreset, GammaPresetAtomic};
+
 
 
 
 const TIMER_TICK_MS : u32 = 16;
 
-const WM_APP__REQ_REFRESH                : u32 = WM_APP + 1;
-const WM_APP__REQ_OVERLAY_CREATE         : u32 = WM_APP + 2;
-const WM_APP__REQ_OVERLAY_CLEAR_ALL      : u32 = WM_APP + 3;
-const WM_APP__UN_REGISTER_HOTEKYS        : u32 = WM_APP + 4;
-const WM_APP__REQ_TOGGLE_FULLSCREEN_MODE : u32 = WM_APP + 5;
-const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF  : u32 = WM_APP + 6;
+const WM_APP__REQ_REFRESH                 : u32 = WM_APP + 1;
+const WM_APP__REQ_OVERLAY_CREATE          : u32 = WM_APP + 2;
+const WM_APP__REQ_OVERLAY_CLEAR_ALL       : u32 = WM_APP + 3;
+const WM_APP__UN_REGISTER_HOTEKYS         : u32 = WM_APP + 4;
+const WM_APP__REQ_TOGGLE_FULLSCREEN_MODE  : u32 = WM_APP + 5;
+const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF   : u32 = WM_APP + 6;
+const WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL : u32 = WM_APP + 7;
+const WM_APP__REQ_MAG_REFRESH             : u32 = WM_APP + 8;
 
 
 
@@ -43,7 +51,8 @@ pub struct WinDusky {
     pub effects : &'static effects::ColorEffects,
     pub presets : &'static GammaPresets,
 
-    fs_overlay : &'static FullScreenOverlay,
+    fs_overlay  : &'static FullScreenOverlay,
+    mag_overlay : &'static MagOverlay,
 
     thread_id : u32,
 
@@ -92,7 +101,7 @@ impl WinDusky {
             return Err (format!("MagInitialize failed with error: {:?}", GetLastError()));
         }
 
-        overlay::register_overlay_class()?;
+        overlay_effect::register_overlay_class()?;
 
         conf.check_dusky_conf_version_match();
 
@@ -102,10 +111,13 @@ impl WinDusky {
         let fs_overlay = FullScreenOverlay::instance();
         fs_overlay.effect.store (effects.default);
 
+        let mag_overlay = MagOverlay::instance();
+        mag_overlay.level.store (*MAG_EFFECT_DEFAULT);
+
         let auto = auto::AutoOverlay::init (conf, effects);
 
         let dusky =  WinDusky {
-            conf, auto, effects, presets, fs_overlay,
+            conf, auto, effects, presets, fs_overlay, mag_overlay,
 
             thread_id : GetCurrentThreadId(),
 
@@ -126,11 +138,14 @@ impl WinDusky {
     } }
 
 
+
+
     pub fn start_win_dusky (&self) -> Result<(), String> { unsafe {
 
         self.register_hotkeys();
 
-        self.setup_win_hooks();
+        self.setup_win_events_hooks();
+        self.setup_pointer_move_hook();
 
         // we'll setup gamma, but only if specified active at startup (to avoid resetting otherwise)
         self.gamma_active.store (self.conf.check_flag__gamma_at_startup());
@@ -158,8 +173,13 @@ impl WinDusky {
                     self.toggle_full_screen_mode();
                 }
                 WM_APP__REQ_TOGGLE_FULLSCREEN_EFF => {
-                    let eff = self.fs_overlay.toggle_effect();
-                    tray::update_full_screen_mode (self.fs_overlay.enabled.is_set(), eff.map (|e| e.name()));
+                    self.toggle_full_screen_effect();
+                }
+                WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL => {
+                    self.toggle_mag_overlay();
+                }
+                WM_APP__REQ_MAG_REFRESH => {
+                    self.mag_overlay.refresh_mag_overlay()
                 }
                 WM_APP__REQ_OVERLAY_CREATE => {
                     self.create_overlay (Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _));
@@ -181,6 +201,8 @@ impl WinDusky {
         }
 
     } }
+
+
 
     pub fn update_gamma_state (&self) {
         if let Some ((spec, name)) = self.gamma_active.is_set() .then_some ( {
@@ -219,18 +241,37 @@ impl WinDusky {
     }
 
 
+
+
+    pub fn toggle_mag_overlay (&self) {
+        let mag_eff = self.mag_overlay.toggle_effect();
+        tray::update_tray__mag_level (mag_eff);
+        self.post_req__mag_refresh();
+    }
+    pub fn cycle_mag_level (&self, forward: bool) {
+        //if self.mag_overlay.active.is_clear() { return }
+        //^^ we'll allow direct zoom level cycling, and auto-enable it if its not enabled
+        // .. but if we were inactive, we'll reset mag before we start cycling
+        if !self.mag_overlay.active.is_set() {
+            self.mag_overlay.level.store (*MAG_EFFECT_IDENTITY);
+        }
+        self.mag_overlay.active.set();
+        let mag_eff = self.mag_overlay .apply_mag_level_cycled (Some(forward));
+        tray::update_tray__mag_level (Some(mag_eff));
+        self.post_req__mag_refresh();
+    }
+
+
+
+
     pub fn check_fs_mode (&self) -> bool {
         self.fs_overlay.enabled.is_set()
     }
-    fn toggle_full_screen_mode (&self) -> bool {
+    fn toggle_full_screen_mode (&self) {
         // Note that this to toggle the ENABLED state .. not to toggle overlay alone
         // When toggling on, it does apply overlay, and when toggling off, it does remove it..
         // .. however, once can unapply the overlay (e.g. via hotkey) w/o toggling the mode off too!
         let enabled = self.fs_overlay.toggle();
-        self.set_full_screen_mode (enabled);
-        enabled
-    }
-    fn set_full_screen_mode (&self, enabled:bool) {
         let prior_eff : ColorEffect = (&self.fs_overlay.effect).into();
         self.fs_overlay.set_enabled(enabled);
         if enabled {
@@ -243,8 +284,23 @@ impl WinDusky {
         //else {}  // <- if we just toggled off fs-mode .. thats it, nothing more to do
 
         let effect = if !enabled { prior_eff } else { (&self.fs_overlay.effect).into() };
-        tray::update_full_screen_mode (enabled, Some(effect.name()));
+        tray::update_tray__full_screen_mode (enabled, Some(effect));
     }
+    fn toggle_full_screen_effect (&self) {
+        let eff = self.fs_overlay.toggle_effect();
+        tray::update_tray__full_screen_mode (self.fs_overlay.enabled.is_set(), eff);
+    }
+    fn cycle_full_screen_effect (&self, forward: bool) {
+        if self.fs_overlay.active.is_clear() { return }
+        let eff = self.fs_overlay.apply_effect_cycled (Some(forward));
+        tray::update_tray__full_screen_mode (true, Some(eff))
+    }
+    fn clear_full_screen_effect (&self) {
+        let eff = self.fs_overlay .unapply_effect();
+        tray::update_tray__full_screen_mode (false, eff);
+    }
+
+
 
 
     fn create_overlay (&self, target:Hwnd, effect:ColorEffect) {
@@ -264,9 +320,9 @@ impl WinDusky {
             self.occl_marked.set();
             overlays.insert (target, overlay);
             tray::update_tray__overlay_count (overlays.len());
-            info! ("Created Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
+            info! ("Created Overlay on {:?} with effect: {:?}, tot: {:?}", target, effect.name(), overlays.len());
         } else {
-            warn! ("Failed to create Overlay on {:?} with {:?}, tot: {:?}", target, effect, overlays.len());
+            warn! ("Failed to create Overlay on {:?} with effect: {:?}, tot: {:?}", target, effect.name(), overlays.len());
         }
     }
 
@@ -331,11 +387,15 @@ impl WinDusky {
     }
 
 
+
+
     fn post_simple_req (&self, msg:u32) { unsafe {
         let _ = PostThreadMessageW (self.thread_id, msg, WPARAM(0), LPARAM(0));
     } }
     pub fn post_req__toggle_fs_mode      (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_MODE) }
     pub fn post_req__toggle_fs_eff       (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_EFF) }
+    pub fn post_req__toggle_mag_level    (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL) }
+    pub fn post_req__mag_refresh         (&self) { self.post_simple_req (WM_APP__REQ_MAG_REFRESH) }
     pub fn post_req__refresh             (&self) { self.post_simple_req (WM_APP__REQ_REFRESH) }
     pub fn post_req__overlay_clear_all   (&self) { self.post_simple_req (WM_APP__REQ_OVERLAY_CLEAR_ALL) }
     pub fn post_req__un_register_hotkeys (&self) { self.post_simple_req (WM_APP__UN_REGISTER_HOTEKYS) }

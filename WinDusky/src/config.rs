@@ -351,6 +351,11 @@ impl Config {
     pub fn get_hotkey__next_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__next_gamma_preset") }
     pub fn get_hotkey__prev_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__prev_gamma_preset") }
 
+    pub fn get_hotkey__screen_mag_toggle (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__screen_magnification_toggle") }
+    pub fn get_hotkey__next_mag_level (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__next_magnification_level") }
+    pub fn get_hotkey__prev_mag_level (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__prev_magnification_level") }
+
+
 
     pub fn get_auto_overlay_luminance__threshold (&self) -> u8 {
         let lum_fl = self.get_float ("auto_overlay_luminance__threshold");

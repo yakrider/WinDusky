@@ -2,7 +2,7 @@
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{OnceLock};
 use tracing::info;
 use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
@@ -115,6 +115,9 @@ impl ColorEffect {
         let cycler = &ColorEffects::instance().cycle_order;
         cycler .get (self.0 % cycler.len()) .map (|(s,_)| s.as_str()) .unwrap_or("")
     }
+    pub fn is_identity (&self) -> bool {
+        self.get() == COLOR_EFF__IDENTITY
+    }
 }
 
 impl From <&ColorEffectAtomic> for ColorEffect {
@@ -138,14 +141,14 @@ impl ColorEffectAtomic {
 
     pub fn cycle (&self, forward: bool) -> ColorEffect {
         let cyc_len = ColorEffects::instance().cycle_order.len();
-        // now there no adding negatives for usize, but we can substract positives, hence using incr+1 below
-        let incr_plus_one = if forward { 2 } else { 0 };   // either [1 or -1], then add 1
-        let prior_idx = self.0.fetch_update (
-            Ordering::AcqRel, Ordering::Acquire,
-            |cur| Some ((cur + cyc_len + incr_plus_one - 1) % cyc_len)
-        );
-        let new_idx = (prior_idx.unwrap() + cyc_len + incr_plus_one - 1) % cyc_len;
+        let incr = if forward { cyc_len + 1 } else { cyc_len -1 };
+        let update_fn = |cur| Some ((cur + incr) % cyc_len);
+        let prior_idx = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
+        let new_idx = update_fn (prior_idx.unwrap_or_else(|e| e)) .unwrap();
         ColorEffect (new_idx)
     }
 
+
 }
+
+

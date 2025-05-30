@@ -20,15 +20,17 @@ pub struct MagOverlay {
 }
 
 
-
 const MAG_SCALING_STEP : f32   = 1.10_f32;   // ten-percent magnification per step
 const MAX_MAG_LEVELS   : usize = 32;         // max number of magnification steps allowed
+
 
 
 #[derive (Debug, Copy, Clone, PartialEq, Eq)]
 /// Magnification as how many levels of <?>% increment to apply <br>
 /// e.g. 5 -> 1.10^8 = ~2.14x
 pub struct MagEffect (pub u8);
+
+
 
 #[derive (Debug)]
 pub struct MagEffectAtomic (AtomicU8);
@@ -79,7 +81,6 @@ impl MagEffectAtomic {
         MagEffect (new_level)
     }
 }
-
 
 
 
@@ -164,6 +165,4 @@ impl MagOverlay {
     }
 
 }
-
-
 

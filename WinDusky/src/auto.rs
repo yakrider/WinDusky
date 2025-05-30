@@ -156,13 +156,23 @@ impl AutoOverlay {
 
 
     pub fn register_user_unapplied (&self, hwnd:Hwnd) {
-        info! ("Registering user un-toggle of overlay: {:?} .. (Override added!)", hwnd);
+        info! ("Registering user un-toggle of overlay: {hwnd:?} .. (Override added!)");
         let mut eval_cache = self.eval_cache.write().unwrap();
         if let Some(result) = eval_cache .get_mut (&hwnd) {
             result.enabled = false; result.overridden = true;
         } else {
             eval_cache .insert (hwnd, *effect_overriden);
         }
+        let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
+        update_tray__override_added (hwnd);
+        update_tray__overrides_count (n_overrides);
+    }
+    pub fn remove_override (&self, hwnd:Hwnd) {
+        info! ("Removing user override record for {hwnd:?}!");
+        let mut eval_cache = self.eval_cache.write().unwrap();
+        if eval_cache.remove (&hwnd) .is_some() {
+            update_tray__override_removed (hwnd);
+        };
         let n_overrides = eval_cache .iter() .filter (|(_,r)| r.overridden) .count();
         update_tray__overrides_count(n_overrides);
     }

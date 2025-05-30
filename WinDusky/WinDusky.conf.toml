@@ -94,6 +94,13 @@ hotkey__prev_gamma_preset = { key = "Comma",  modifiers = ["Win", "Shift"] }
 
 
 
+# REMINDER that in addition to the configurable hotkeys above, there are also the following hard-coded hotkeys
+# Mouse-Wheel while WinDusky tray-icon context-menu is active, when the following modifier keys are held, cycles through the following:
+# Ctrl  + Mouse-Wheel --> cycle through magnification levels
+# Shift + Mouse-Wheel --> cycle through gamma presets
+# Ctrl  + Shift + Mouse-Wheel --> cycle through color effects (in per-window or full-screen mode as applicable)
+
+
 
 
 
@@ -262,6 +269,12 @@ effects_cycle_order = [
 # If this is not specified, and/or does not match effects in the list, the first effect in the cycle list will be used
 # Further, if the cycle list itself is empty or unspecified, a Simple Inversion matrix will be used as default
 effects_default = "Smart Inversion V3"
+
+
+# The default color-effect for full-screen-effect mode can be specified separately
+# The suggested default if running the OS on non-dark-theme can be the same as effects_default, ie. "Smart Inversion V3"
+# However, if running OS in dark-theme as expected, that can be pointlessly jarring, so suggestion is "Grayscale"
+effects_full_screen_default = "Grayscale"
 
 
 

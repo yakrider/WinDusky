@@ -38,7 +38,7 @@ fn main() {
 
 
     thread::spawn (|| {
-        tray::start_system_tray_monitor();
+        tray::start_system_tray_monitor (wd);
     });
     thread::sleep (Duration::from_millis(100));
     // ^^ we'll give a bit for tray to come up so it can absorb changes from dusky-startup below

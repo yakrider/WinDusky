@@ -11,6 +11,7 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH, PO
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::types::Hwnd;
@@ -48,6 +49,18 @@ pub fn get_pointer_loc () -> POINT { unsafe {
     point
 } }
 
+pub fn check_ctrl_modkey_active () -> bool { unsafe {
+    GetKeyState (VK_CONTROL.0 as _) < 0
+} }
+pub fn check_shift_modkey_active () -> bool { unsafe {
+    GetKeyState (VK_SHIFT.0 as _) < 0
+} }
+pub fn check_alt_modkey_active () -> bool { unsafe {
+    GetKeyState (VK_MENU.0 as _) < 0
+} }
+pub fn check_win_modkey_active () -> bool { unsafe {
+    GetKeyState (VK_LWIN.0 as _) < 0 || GetKeyState (VK_RWIN.0 as _) < 0
+} }
 
 
 pub fn win_check_if_topmost (hwnd: Hwnd) -> bool { unsafe {

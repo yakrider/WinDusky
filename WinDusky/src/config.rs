@@ -456,6 +456,9 @@ impl Config {
     pub fn get_effects_default (&self) -> String {
         self.get_string ("effects_default")
     }
+    pub fn get_effects_full_screen_default (&self) -> String {
+        self.get_string ("effects_full_screen_default")
+    }
 
 
 

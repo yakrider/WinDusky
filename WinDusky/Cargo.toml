@@ -40,6 +40,8 @@ tracing-subscriber = { version = "0.3", features = ["local-time"] }
 tracing-appender = "0.2"
 thiserror = "2.0"
 minifb = "0.28.0"
+strum = "0.27"
+strum_macros = "0.27"
 
 
 

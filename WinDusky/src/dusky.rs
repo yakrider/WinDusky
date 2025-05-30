@@ -5,7 +5,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
+
+use strum_macros::FromRepr;
 use tracing::{info, warn};
+
 use windows::Win32::Foundation::{GetLastError, FALSE, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -32,14 +35,34 @@ use crate::presets::{GammaPresets, GammaPreset, GammaPresetAtomic};
 
 const TIMER_TICK_MS : u32 = 16;
 
-const WM_APP__REQ_REFRESH                 : u32 = WM_APP + 1;
-const WM_APP__REQ_OVERLAY_CREATE          : u32 = WM_APP + 2;
-const WM_APP__REQ_OVERLAY_CLEAR_ALL       : u32 = WM_APP + 3;
-const WM_APP__UN_REGISTER_HOTEKYS         : u32 = WM_APP + 4;
-const WM_APP__REQ_TOGGLE_FULLSCREEN_MODE  : u32 = WM_APP + 5;
-const WM_APP__REQ_TOGGLE_FULLSCREEN_EFF   : u32 = WM_APP + 6;
-const WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL : u32 = WM_APP + 7;
-const WM_APP__REQ_MAG_REFRESH             : u32 = WM_APP + 8;
+#[derive (Debug, Clone, Copy, FromRepr)]
+#[repr (u32)]
+enum DuskyReq {
+
+    Refresh = WM_APP + 1,
+    MagRefresh,
+
+    ToggleGammaPreset,
+    ApplyGammaPreset,
+    CycleGammaPreset,
+
+    ToggleMagLevel,
+    ApplyMagLevel,
+    CycleMagLevel,
+
+    ToggleFullscreenMode,
+    ToggleColorEffect,
+    ToggleSelectedEff,
+    CycleColorEffect,
+
+    OverlayCreate,
+    OverlayRemove,
+
+    OverlayClearAll,
+    OverridesClearAll,
+
+    UnRegisterHotkeys,
+}
 
 
 
@@ -51,8 +74,8 @@ pub struct WinDusky {
     pub effects : &'static effects::ColorEffects,
     pub presets : &'static GammaPresets,
 
-    fs_overlay  : &'static FullScreenOverlay,
-    mag_overlay : &'static MagOverlay,
+    pub fs_overlay  : &'static FullScreenOverlay,
+    pub mag_overlay : &'static MagOverlay,
 
     thread_id : u32,
 
@@ -71,8 +94,11 @@ pub struct WinDusky {
     occl_marked : Flag,
     // ^^ whether we've been marked to have to refresh overlay occlusion calcs (based on win-events)
 
-    fgnd_cache : HwndAtomic,
+    pub(crate) fgnd_cache : HwndAtomic,
     // ^^ since GetForegroundWindow can return null in transitions, we'd rather act on last cached fgnd for fallback
+
+    pub(crate) fgnd_ov_cache : HwndAtomic,
+    // ^^ further, for tray action, we also want to separately remember what the last active overlay hwnd was
 }
 
 
@@ -109,7 +135,7 @@ impl WinDusky {
         let presets = GammaPresets::init (conf);
 
         let fs_overlay = FullScreenOverlay::instance();
-        fs_overlay.effect.store (effects.default);
+        fs_overlay.effect.store (effects.default_fs);
 
         let mag_overlay = MagOverlay::instance();
         mag_overlay.level.store (*MAG_EFFECT_DEFAULT);
@@ -131,7 +157,8 @@ impl WinDusky {
             cur_timer   : AtomicUsize::default(),
             occl_marked : Flag::new(true),
 
-            fgnd_cache  : HwndAtomic::default(),
+            fgnd_cache     : HwndAtomic::default(),
+            fgnd_ov_cache  : HwndAtomic::default(),
         };
 
         Ok ( WIN_DUSKY .get_or_init (move || dusky) )
@@ -162,64 +189,71 @@ impl WinDusky {
                 return Err (format!("GetMessageW failed with error: {:?}", GetLastError()));
             }
 
-            match msg.message {
-                WM_TIMER | WM_APP__REQ_REFRESH => {
-                    self.refresh_overlays();
+            use DuskyReq::*;
+            match DuskyReq::from_repr (msg.message) {
+
+                Some (req) => match req {
+
+                    Refresh    => { self.refresh_overlays(); }
+                    MagRefresh => { self.mag_overlay.refresh_mag_overlay(); }
+
+                    ToggleGammaPreset => { self.handle_req__toggle_gamma_active(); }
+                    ApplyGammaPreset  => { self.handle_req__apply_gamma_preset (GammaPreset (msg.lParam.0 as _)); }
+                    CycleGammaPreset  => { self.handle_req__cycle_gamma_preset (msg.wParam.0 != 0); }
+
+                    ToggleMagLevel => { self.handle_req__toggle_mag_overlay(); }
+                    CycleMagLevel  => { self.handle_req__cycle_mag_level (msg.wParam.0 != 0); }
+                    ApplyMagLevel  => { self.handle_req__apply_mag_level (MagEffect (msg.lParam.0 as _)); }
+
+                    ToggleFullscreenMode => { self.handle_req__toggle_full_screen_mode(); }
+                    ToggleColorEffect    => { self.handle_req__toggle_color_effect (Hwnd (msg.wParam.0 as _)); }
+                    ToggleSelectedEff    => { self.handle_req__toggle_selected_effect (ColorEffect (msg.lParam.0 as _)); }
+                    CycleColorEffect     => { self.handle_req__cycle_color_effect (msg.wParam.0 != 0); }
+
+                    OverlayCreate => { self.handle_req__overlay_create (Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _)); }
+                    OverlayRemove => { self.handle_req__overlay_remove (Hwnd (msg.wParam.0 as _)); }
+
+                    OverlayClearAll   => { self.handle_req__clear_overlays(); }
+                    OverridesClearAll => { self.auto.clear_user_overrides(); }
+
+                    UnRegisterHotkeys => { self.un_register_hotkeys(); },
                 }
-                WM_HOTKEY => {
-                    self.handle_hotkeys (msg.wParam.0);
+
+                None => match msg.message {
+                    WM_TIMER   => { self.refresh_overlays(); }
+                    WM_HOTKEY  => { self.handle_hotkeys(msg.wParam.0); }
+                    WM_DESTROY => { self.handle_shutdown_req(); }
+                    _          => { DispatchMessageW (&msg); }
                 }
-                WM_APP__REQ_TOGGLE_FULLSCREEN_MODE => {
-                    self.toggle_full_screen_mode();
-                }
-                WM_APP__REQ_TOGGLE_FULLSCREEN_EFF => {
-                    self.toggle_full_screen_effect();
-                }
-                WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL => {
-                    self.toggle_mag_overlay();
-                }
-                WM_APP__REQ_MAG_REFRESH => {
-                    self.mag_overlay.refresh_mag_overlay()
-                }
-                WM_APP__REQ_OVERLAY_CREATE => {
-                    self.create_overlay (Hwnd (msg.wParam.0 as _), ColorEffect (msg.lParam.0 as _));
-                }
-                WM_APP__REQ_OVERLAY_CLEAR_ALL => {
-                    self.clear_overlays();
-                }
-                WM_APP__UN_REGISTER_HOTEKYS => {
-                    self.un_register_hotkeys();
-                }
-                WM_DESTROY => {
-                    warn!("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
-                    if self.gamma_active.is_set() { gamma::reset_screen_ramp(); }
-                    let _ = MagUninitialize();
-                    PostQuitMessage(0);
-                }
-                _ => { DispatchMessageW(&msg); }
-            }
+
+            };
+
         }
 
     } }
 
 
 
-    pub fn update_gamma_state (&self) {
-        if let Some ((spec, name)) = self.gamma_active.is_set() .then_some ( {
-            let preset = GammaPreset::from (&self.gamma_preset);
-            (preset.get(), preset.name())
+    fn update_gamma_state (&self) {
+        if let Some (preset) = self.gamma_active.is_set() .then_some ( {
+            GammaPreset::from (&self.gamma_preset)
         } ) {
-            info! ("Applying GammaPreset values from Preset : {:?}", name);
+            info! ("Applying GammaPreset values from Preset : {:?}", preset.name());
+            let spec = preset.get();
             let succeeded = gamma::set_screen_ramp_gbct (&spec.gbc, spec.color_temp);
-            tray::update_tray__gamma_state (true, succeeded, Some(name));
+            tray::update_tray__gamma_state (true, succeeded, Some(preset));
         } else {
             info! ("Resetting Gamma values to Normal");
             gamma::reset_screen_ramp();
             tray::update_tray__gamma_state (false, true, None);
         }
     }
+    fn check_active_gamma_preset_match (&self) -> Option <bool> {
+        let preset = GammaPreset::from (&self.gamma_preset) .get();
+        gamma::check_active_gamma_match (&preset.gbc, preset.color_temp)
+    }
 
-    pub fn toggle_gamma_active (&self) {
+    fn handle_req__toggle_gamma_active (&self) {
         if self.gamma_active.is_set() && !self.check_active_gamma_preset_match().unwrap_or_default() {
             warn! ("Gamma Preset Toggle requested, but active ramp does not match preset .. Re-applying instead !!");
             self.update_gamma_state();
@@ -228,13 +262,12 @@ impl WinDusky {
         self.gamma_active.toggle();
         self.update_gamma_state();
     }
-
-    pub fn check_active_gamma_preset_match (&self) -> Option <bool> {
-        let preset = GammaPreset::from (&self.gamma_preset) .get();
-        gamma::check_active_gamma_match (&preset.gbc, preset.color_temp)
+    fn handle_req__apply_gamma_preset (&self, preset: GammaPreset) {
+        self.gamma_preset.store (preset);
+        self.gamma_active.set();
+        self.update_gamma_state();
     }
-
-    pub fn cycle_gamma_preset (&self, forward: bool) {
+    fn handle_req__cycle_gamma_preset (&self, forward: bool) { tracing::debug! ("why not");
         if self.gamma_active.is_clear() { return }
         self.gamma_preset.cycle (forward);
         self.update_gamma_state();
@@ -243,12 +276,19 @@ impl WinDusky {
 
 
 
-    pub fn toggle_mag_overlay (&self) {
+    fn handle_req__toggle_mag_overlay (&self) {
         let mag_eff = self.mag_overlay.toggle_effect();
         tray::update_tray__mag_level (mag_eff);
         self.post_req__mag_refresh();
     }
-    pub fn cycle_mag_level (&self, forward: bool) {
+    fn handle_req__apply_mag_level (&self, mag_eff: MagEffect) {
+        self.mag_overlay.active.set();
+        self.mag_overlay.level.store (mag_eff);
+        self.mag_overlay .apply_mag_level_cycled (None);
+        tray::update_tray__mag_level (Some(mag_eff));
+        self.post_req__mag_refresh();
+    }
+    fn handle_req__cycle_mag_level (&self, forward: bool) {
         //if self.mag_overlay.active.is_clear() { return }
         //^^ we'll allow direct zoom level cycling, and auto-enable it if its not enabled
         // .. but if we were inactive, we'll reset mag before we start cycling
@@ -267,28 +307,17 @@ impl WinDusky {
     pub fn check_fs_mode (&self) -> bool {
         self.fs_overlay.enabled.is_set()
     }
-    fn toggle_full_screen_mode (&self) {
-        // Note that this to toggle the ENABLED state .. not to toggle overlay alone
-        // When toggling on, it does apply overlay, and when toggling off, it does remove it..
-        // .. however, once can unapply the overlay (e.g. via hotkey) w/o toggling the mode off too!
-        let enabled = self.fs_overlay.toggle();
-        let prior_eff : ColorEffect = (&self.fs_overlay.effect).into();
-        self.fs_overlay.set_enabled(enabled);
-        if enabled {
-            // we gotta clear out per-hwnd overlays upon entering full-screen mode
-            // Note that since this could be called from other threads (e.g tray), we must post message
-            // (as hwnds can only be destroyed from the threads that called them)
-            self.post_req__overlay_clear_all();
-            // ^^ will also clear overrides
-        }
-        //else {}  // <- if we just toggled off fs-mode .. thats it, nothing more to do
-
-        let effect = if !enabled { prior_eff } else { (&self.fs_overlay.effect).into() };
-        tray::update_tray__full_screen_mode (enabled, Some(effect));
+    pub fn get_fs_eff (&self) -> Option <ColorEffect> {
+        self.fs_overlay.active.is_set() .then_some (self.fs_overlay.effect.load())
     }
+
     fn toggle_full_screen_effect (&self) {
         let eff = self.fs_overlay.toggle_effect();
         tray::update_tray__full_screen_mode (self.fs_overlay.enabled.is_set(), eff);
+    }
+    fn apply_full_screen_effect (&self, effect: ColorEffect) {
+        self.fs_overlay.apply_effect (effect);
+        tray::update_tray__full_screen_mode (self.fs_overlay.enabled.is_set(), Some(effect));
     }
     fn cycle_full_screen_effect (&self, forward: bool) {
         if self.fs_overlay.active.is_clear() { return }
@@ -298,6 +327,21 @@ impl WinDusky {
     fn clear_full_screen_effect (&self) {
         let eff = self.fs_overlay .unapply_effect();
         tray::update_tray__full_screen_mode (false, eff);
+    }
+    fn handle_req__toggle_full_screen_mode (&self) {
+        // Note that this to toggle the ENABLED state .. not to toggle overlay alone
+        // When toggling on, it does apply overlay, and when toggling off, it does remove it..
+        // .. however, one can unapply the overlay (e.g. via hotkey) w/o toggling the mode off too!
+        let enabled = self.fs_overlay.toggle();
+        self.fs_overlay.set_enabled(enabled);
+        if enabled {
+            // we gotta clear out per-hwnd overlays upon entering full-screen mode
+            self.clear_hwnd_overlays();  // <- will also clear overrides
+        }
+        //else {}  // <- if we just toggled off fs-mode .. thats it, nothing more to do
+
+        let effect = enabled .then_some (self.fs_overlay.effect.load());
+        tray::update_tray__full_screen_mode (enabled, effect);
     }
 
 
@@ -314,16 +358,24 @@ impl WinDusky {
             warn! ("Ignoring overlay creation request for {:?} .. Overlay already exists!!", &target);
             return
         }
-        if let Ok(overlay) = Overlay::new (target, effect) {
-            if overlays.is_empty() { self.ensure_timer_running() }
-            self.hosts.write().unwrap().insert(overlay.host);
-            self.occl_marked.set();
-            overlays.insert (target, overlay);
-            tray::update_tray__overlay_count (overlays.len());
-            info! ("Created Overlay on {:?} with effect: {:?}, tot: {:?}", target, effect.name(), overlays.len());
-        } else {
-            warn! ("Failed to create Overlay on {:?} with effect: {:?}, tot: {:?}", target, effect.name(), overlays.len());
-        }
+        match Overlay::new (target, effect) {
+            Ok (overlay) => {
+                if overlays.is_empty() { self.ensure_timer_running() }
+                self.hosts.write().unwrap().insert(overlay.host);
+                self.occl_marked.set();
+                overlays.insert (target, overlay);
+                self.fgnd_ov_cache.store(target);
+                tray::update_tray__overlay_created (target, effect);
+                tray::update_tray__overlays_count (overlays.len());
+                info! ("Created Overlay on {:?} with effect: {:?}, tot: {:?}", target, effect.name(), overlays.len());
+            }
+            Err (err) => {
+                warn! (
+                    "Failed to create Overlay on {:?} with effect: {:?}, tot: {:?} .. error: {:?}",
+                    target, effect.name(), overlays.len(), err
+                );
+            }
+        };
     }
 
     fn remove_overlay (&self, target:Hwnd) {
@@ -332,12 +384,14 @@ impl WinDusky {
         if let Some(overlay) = overlays.remove (&target) {
             overlay.destroy();
             self.hosts.write().unwrap().remove (&overlay.host);
-            if overlay.target == self.ov_topmost.load() { self.ov_topmost.clear(); }
+            if self.ov_topmost.contains(target) { self.ov_topmost.clear(); }
+            if self.fgnd_ov_cache.contains(target) { self.fgnd_ov_cache.clear(); }
             info! ("Removed Overlay from {:?}, tot: {:?}", overlay.target, overlays.len());
+            tray::update_tray__overlay_removed (overlay.target);
         }
         if overlays.is_empty() { self.disable_timer() }
         self.occl_marked.set();
-        tray::update_tray__overlay_count (overlays.len());
+        tray::update_tray__overlays_count (overlays.len());
     }
 
     fn refresh_overlays (&self) {
@@ -364,7 +418,15 @@ impl WinDusky {
         }   }
     }
 
-    fn clear_overlays (&self) {
+    fn handle_req__clear_overlays (&self) {
+        // Reminder that this MUST be called from overlay-manager thread to have effect on overlay hwnds
+        if self.fs_overlay.enabled.is_set() {
+            self.clear_full_screen_effect();
+        } else {
+            self.clear_hwnd_overlays();
+        }
+    }
+    fn clear_hwnd_overlays (&self) {
         // Reminder that this MUST be called from overlay-manager thread to have effect on overlay hwnds
         let mut overlays = self.overlays.write().unwrap();
         info! ("Clearing all {:?} Color Effect Overlays", overlays.len());
@@ -378,8 +440,72 @@ impl WinDusky {
         }
         self.ov_topmost.clear();
         self.disable_timer();
-        tray::update_tray__overlay_count(0);
+        tray::update_tray__overlays_count(0);
         self.auto.clear_user_overrides();
+    }
+
+
+    fn handle_req__toggle_selected_effect (&self, effect: ColorEffect) {
+        if self.fs_overlay.enabled.is_set() {
+            if self.fs_overlay.active.is_set() && self.fs_overlay.effect.load() == effect {
+                self.toggle_full_screen_effect();
+            } else {
+                self.apply_full_screen_effect (effect);
+            }
+        } else {
+            // if we're trying to toggle a selected effect (from list), it must apply to last-fgnd-ov
+            let target = self.fgnd_ov_cache.load();
+            if let Some(overlay) = self.overlays.write().unwrap().get_mut(&target) {
+                let prior_eff = overlay.effect.load();
+                if effect == prior_eff {
+                    self.post_req__overlay_remove (target);
+                } else {
+                    overlay.apply_effect(effect);
+                    tray::update_tray__overlay_cycled (target, effect);
+                }
+            }
+        }
+    }
+    fn handle_req__cycle_color_effect (&self, is_fwd: bool) {
+        if self.check_fs_mode() {
+            self.cycle_full_screen_effect (is_fwd);
+            return;
+        }
+        let target = self.fgnd_ov_cache.load();
+        // ^^ unlike toggling effect, cycling must be on prior toggled hwnd, so we use fgnd_ov_cache instead of fgnd_cache
+        if let Some(overlay) = self.overlays .read().unwrap() .get (&target) {
+            let effect = overlay.apply_effect_cycled (Some(is_fwd));
+            self.auto.update_cached_rule_result_effect (target, effect);
+            tray::update_tray__overlay_cycled (target, effect);
+        }
+    }
+    fn handle_req__toggle_color_effect (&self, target:Hwnd) {
+        if self.fs_overlay.enabled.is_set() {
+            self.toggle_full_screen_effect();
+        } else {
+            self.handle_req__toggle_overlay (target);
+        }
+    }
+    fn handle_req__toggle_overlay (&self, target:Hwnd) {
+        let target = if !target.is_valid() { self.fgnd_cache.load() } else { target };
+        if self .overlays .read().unwrap() .contains_key (&target) {
+            self.handle_req__overlay_remove (target);
+        } else {
+            // if there was some effect for it in eval cache, we'll use that or the overlay
+            // (e.g. this would preserve last effect when the overlay might have been last toggled on/off)
+            // however, if we're toggling on, we dont want to toggle to nothing .. so we'll find some default
+            let effect = self.auto.check_rule_cached (target) .and_then (|r| r.effect)
+                .filter (|eff| !eff.is_identity()) .unwrap_or (self.effects.default);
+            self.handle_req__overlay_create (target, effect);
+        }
+    }
+    fn handle_req__overlay_create (&self, target:Hwnd, effect:ColorEffect) {
+        self.create_overlay (target, effect);
+    }
+    fn handle_req__overlay_remove (&self, target:Hwnd) {
+        self.remove_overlay (target);
+        self.auto.register_user_unapplied (target);
+        self.occl_marked.set();
     }
 
     pub fn has_overlay (&self, hwnd: &Hwnd) -> bool {
@@ -389,22 +515,44 @@ impl WinDusky {
 
 
 
-    fn post_simple_req (&self, msg:u32) { unsafe {
-        let _ = PostThreadMessageW (self.thread_id, msg, WPARAM(0), LPARAM(0));
+    fn post_simple_req (&self, msg: DuskyReq) { unsafe {
+        let _ = PostThreadMessageW (self.thread_id,  msg as _,  WPARAM(0),  LPARAM(0));
     } }
-    pub fn post_req__toggle_fs_mode      (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_MODE) }
-    pub fn post_req__toggle_fs_eff       (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_FULLSCREEN_EFF) }
-    pub fn post_req__toggle_mag_level    (&self) { self.post_simple_req (WM_APP__REQ_TOGGLE_SCREEN_MAG_LEVEL) }
-    pub fn post_req__mag_refresh         (&self) { self.post_simple_req (WM_APP__REQ_MAG_REFRESH) }
-    pub fn post_req__refresh             (&self) { self.post_simple_req (WM_APP__REQ_REFRESH) }
-    pub fn post_req__overlay_clear_all   (&self) { self.post_simple_req (WM_APP__REQ_OVERLAY_CLEAR_ALL) }
-    pub fn post_req__un_register_hotkeys (&self) { self.post_simple_req (WM_APP__UN_REGISTER_HOTEKYS) }
-    pub fn post_req__quit                (&self) { self.post_simple_req (WM_DESTROY) }
+    fn post_cycle_req (&self, msg: DuskyReq, is_fwd: bool) { unsafe {
+        let wparam = if is_fwd { 1 } else { 0 };
+        let _ = PostThreadMessageW (self.thread_id,  msg as _,  WPARAM (wparam),  LPARAM(0));
+    } }
+    fn post_req (&self, req: DuskyReq, target: Option<Hwnd>, arg: Option<usize>) { unsafe {
+        let wparam = WPARAM (target .map (|t| t.0) .unwrap_or_default() as _);
+        let lparam = LPARAM (arg .unwrap_or_default() as _);
+        let _ = PostThreadMessageW (self.thread_id,  req as _,  wparam,  lparam);
+    } }
 
-    pub fn post_req__overlay_create (&self, target:Hwnd, effect:ColorEffect) { unsafe {
-        let _ = PostThreadMessageW (
-            self.thread_id, WM_APP__REQ_OVERLAY_CREATE, WPARAM (target.0 as _), LPARAM (effect.0 as _)
-        );
+    pub fn post_req__refresh             (&self) { self.post_simple_req (DuskyReq::Refresh) }
+    pub fn post_req__mag_refresh         (&self) { self.post_simple_req (DuskyReq::MagRefresh) }
+
+    pub fn post_req__overlay_clear_all   (&self) { self.post_simple_req (DuskyReq::OverlayClearAll) }
+    pub fn post_req__un_register_hotkeys (&self) { self.post_simple_req (DuskyReq::UnRegisterHotkeys) }
+
+    pub fn post_req__toggle_gamma_preset (&self) { self.post_simple_req (DuskyReq::ToggleGammaPreset) }
+    pub fn post_req__toggle_mag_level    (&self) { self.post_simple_req (DuskyReq::ToggleMagLevel) }
+    pub fn post_req__toggle_fs_mode      (&self) { self.post_simple_req (DuskyReq::ToggleFullscreenMode) }
+
+    pub fn post_req__toggle_color_eff    (&self, targ:Hwnd)       { self.post_req (DuskyReq::ToggleColorEffect, Some(targ), None) }
+    pub fn post_req__toggle_selected_eff (&self, eff:ColorEffect) { self.post_req (DuskyReq::ToggleSelectedEff, None, Some(eff.0)) }
+
+    pub fn post_req__cycle_gamma_preset  (&self, is_fwd:bool) { self.post_cycle_req (DuskyReq::CycleGammaPreset, is_fwd) }
+    pub fn post_req__cycle_mag_level     (&self, is_fwd:bool) { self.post_cycle_req (DuskyReq::CycleMagLevel,    is_fwd) }
+    pub fn post_req__cycle_color_effect  (&self, is_fwd:bool) { self.post_cycle_req (DuskyReq::CycleColorEffect, is_fwd) }
+
+    pub fn post_req__apply_gamma_preset  (&self, gp:GammaPreset) { self.post_req (DuskyReq::ApplyGammaPreset, None, Some(gp.0)) }
+    pub fn post_req__apply_mag_level     (&self, mag:MagEffect) { self.post_req (DuskyReq::ApplyMagLevel, None, Some(mag.0 as _)) }
+
+    pub fn post_req__overlay_create      (&self, targ:Hwnd, eff:ColorEffect) { self.post_req (DuskyReq::OverlayCreate, Some(targ), Some(eff.0)) }
+    pub fn post_req__overlay_remove      (&self, targ:Hwnd) { self.post_req (DuskyReq::OverlayRemove, Some(targ), None) }
+
+    pub fn post_req__quit (&self) { unsafe {
+        let _ = PostThreadMessageW (self.thread_id, WM_DESTROY, WPARAM (0), LPARAM(0));
     } }
 
 
@@ -421,6 +569,13 @@ impl WinDusky {
     pub fn get_hosts (&self) -> HashSet<Hwnd> {
         self.hosts.read().unwrap().clone()
     }
+
+    fn handle_shutdown_req (&self) { unsafe {
+        warn!("Shutting down .. ~~~~ GOOD BYE ~~~~ !!");
+        if self.gamma_active.is_set() { gamma::reset_screen_ramp(); }
+        let _ = MagUninitialize();
+        PostQuitMessage(0);
+    } }
 
 }
 

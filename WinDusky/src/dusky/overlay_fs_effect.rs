@@ -12,9 +12,9 @@ use crate::types::Flag;
 
 #[derive (Debug, Default)]
 pub struct FullScreenOverlay {
-    pub enabled : Flag,
-    pub active  : Flag,
-    pub effect  : ColorEffectAtomic,
+    pub(super) enabled : Flag,
+    pub(super) active  : Flag,
+    pub(super) effect  : ColorEffectAtomic,
 }
 
 
@@ -27,7 +27,7 @@ impl FullScreenOverlay {
             FullScreenOverlay {
                 enabled : Flag::default(),
                 active  : Flag::default(),
-                effect  : ColorEffectAtomic::new (ColorEffects::instance().default),
+                effect  : ColorEffectAtomic::new (ColorEffects::instance().default_fs),
             }
         )
     }
@@ -62,14 +62,19 @@ impl FullScreenOverlay {
     }
 
     fn toggle_effect_active (&self) -> ColorEffect {
-        if ColorEffect::from (&self.effect) .is_identity() {
-            self.effect.store (ColorEffects::instance().default)
+        if self.effect.load().is_identity() {
+            self.effect.store (ColorEffects::instance().default_fs)
         }
         self.apply_effect_cycled (None)
     }
 
+    pub fn apply_effect (&self, effect: ColorEffect) {
+        self.effect.store (effect);
+        self.apply_effect_cycled (None);
+    }
+
     pub(super) fn unapply_effect (&self) -> Option<ColorEffect> {
-        let prior = (&self.effect).into();
+        let prior = self.effect.load();
         info! ("Clearing Full Screen Overlay color effect .. (the mode remains active)!");
         self.active.clear();
         self.apply_color_effect (COLOR_EFF__IDENTITY);
@@ -83,7 +88,7 @@ impl FullScreenOverlay {
     } }
 
     pub(super) fn apply_effect_cycled (&self, forward: Option<bool>) -> ColorEffect {
-        let effect = if let Some(forward) = forward { self.effect.cycle (forward) } else { (&self.effect).into() };
+        let effect = if let Some(forward) = forward { self.effect.cycle (forward) } else { self.effect.load() };
         info! ("Setting Full Screen Overlay Color Effect to : {:?}", effect.name());
         self.apply_color_effect (effect.get());
         self.active.set();

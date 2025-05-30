@@ -93,6 +93,10 @@ impl Overlay {
 
         let h_inst : Option<HINSTANCE> = GetModuleHandleW(None) .ok() .map(|h| h.into());
 
+        if !IsWindow (Some(target.into())) .as_bool() {
+            return Err (format! ("CreateOverlay failed for {target:?} .. Hwnd not a window!!"))
+        }
+
         // Create the host for the magniier control
         let Ok(host) = CreateWindowExW (
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -138,6 +142,9 @@ impl Overlay {
 
         // lets clear the flag upfront before we start changing stuff (so it can be marked dirtied in the mean time)
         self.marked.clear();
+
+        // in case we're creating from tray etc, we'll allow the overlay to come to front
+        let _ = AllowSetForegroundWindow (ASFW_ANY);
 
         // we'll size both the host and mag to fit the target hwnd when hotkey was invoked
 
@@ -232,13 +239,15 @@ impl Overlay {
             error! ("Setting Color Effect failed with error: {:?}", GetLastError());
         }
     } }
-    fn apply_effect_cycled (&self, forward: bool) -> ColorEffect {
-        let effect = self.effect.cycle (forward);
+    pub fn apply_effect_cycled (&self, forward: Option<bool>) -> ColorEffect {
+        let effect = if let Some(forward) = forward { self.effect.cycle (forward) } else { self.effect.load() };
         info! ("Setting Color Effect on {:?} to : {:?}", self.target, effect.name());
         self.apply_color_effect (effect.get());
         effect
     }
-    pub(super) fn apply_effect_next (&self) -> ColorEffect { self.apply_effect_cycled (true) }
-    pub(super) fn apply_effect_prev (&self) -> ColorEffect { self.apply_effect_cycled (false) }
+    pub(super) fn apply_effect (&self, eff: ColorEffect) {
+        self.effect.store (eff);
+        self.apply_effect_cycled (None);
+    }
 
 }

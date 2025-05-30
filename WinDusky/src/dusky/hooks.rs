@@ -5,7 +5,7 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HC_ACTION, WH_MOUSE_LL, WM_MOUSEMOVE};
 use crate::dusky::WinDusky;
 use crate::types::Hwnd;
-use crate::win_utils;
+use crate::{tray, win_utils};
 
 
 impl WinDusky {
@@ -88,14 +88,26 @@ impl WinDusky {
             EVENT_OBJECT_HIDE | EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {
                 // we treat hidden/closed/cloaked similarly by removing the overlay if there was any
                 if self.overlays .read().unwrap() .contains_key (&hwnd) {
-                    self.remove_overlay (hwnd)
+                    self.remove_overlay (hwnd);
+                    if self.fgnd_ov_cache.contains(hwnd) {
+                        self.fgnd_ov_cache.clear();
+                    }
                 }
                 self.occl_marked.set();
             }
 
             EVENT_SYSTEM_FOREGROUND => {
                 // first, since we drive dusky from krusty-qbar, we'll ignore any fgnds from interacting there
-                if win_utils::get_exe_by_hwnd (hwnd) .is_some_and (|exe| exe == "krustyboard.exe") {
+                // plus we'll filter out our own windows (from tray-icon), or the tray-window itself
+                // (this should make toggling based on cached-fgnd have less undeisrable surprises)
+                if win_utils::get_exe_by_hwnd (hwnd) .is_some_and (|exe| {
+                    exe == "krustyboard.exe" ||
+                        exe == "WinDusky.exe" ||
+                        exe == "explorer.exe" && {
+                            let class = win_utils::get_win_class_by_hwnd (hwnd);
+                            class == "Shell_TrayWnd" || class == "TopLevelWindowForOverflowXamlIsland"
+                        }
+                }) {
                     return
                 }
                 // else we'll cache this as target for hotkeys actions (GetForegroundWindow  can return null during transitions etc)
@@ -106,9 +118,12 @@ impl WinDusky {
 
                 let overlays = self.overlays.read().unwrap();
 
-                // now if this hwnd already had overlays, we just mark it for udpate and request one
+                // now if this hwnd already had overlays, we just mark it, and update our cache
                 if let Some(overlay) = overlays .get (&hwnd) {
                     overlay.marked.set();
+                    if hwnd != self.fgnd_ov_cache.swap (hwnd) {
+                        tray::update_tray__overlay_fgnd ();
+                    }
                     return
                 }
                 // so we got a non-overlain hwnd to fgnd .. so if we had any overlain hwnds on-top, we should clear them

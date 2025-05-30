@@ -11,6 +11,28 @@ use crate::*;
 
 
 
+
+#[derive (Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct ColorEffect (pub usize);
+
+
+
+#[derive (Debug, Default)]
+pub struct ColorEffectAtomic (AtomicUsize);
+
+
+
+#[derive (Debug)]
+pub struct ColorEffects {
+    //pub effects     : HashMap <String, MAGCOLOREFFECT>,
+    // ^^ can add back if we need by-name lookup .. for now, we'll just put the data into cycle-order vec itself
+    pub cycle_order : Vec <(String, MAGCOLOREFFECT)>,
+    pub default     : ColorEffect,
+    pub default_fs  : ColorEffect,
+}
+
+
+
 // there is no turning-off of full-screen color effect, it should simply be set to identity
 pub const COLOR_EFF__IDENTITY : MAGCOLOREFFECT = MAGCOLOREFFECT { transform: [
      1.0,  0.0,  0.0,  0.0,  0.0,
@@ -32,18 +54,54 @@ pub const COLOR_EFF__FALLBACK_DEFAULT : MAGCOLOREFFECT = COLOR_EFF__SIMPLE_INVER
 
 
 
+static COLOR_EFFECTS : OnceLock <ColorEffects> = OnceLock::new();
 
-#[derive (Debug)]
-pub struct ColorEffects {
-    //pub effects     : HashMap <String, MAGCOLOREFFECT>,
-    // ^^ can add back if we need by-name lookup .. for now, we'll just put the data into cycle-order vec itself
-    pub cycle_order : Vec <(String, MAGCOLOREFFECT)>,
-    pub default     : ColorEffect,
+
+
+
+impl ColorEffect {
+    pub fn get (&self) -> MAGCOLOREFFECT {
+        let cycler = &ColorEffects::instance().cycle_order;
+        cycler .get (self.0 % cycler.len()) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
+    }
+    pub fn name (&self) -> &'static str {
+        let cycler = &ColorEffects::instance().cycle_order;
+        cycler .get (self.0 % cycler.len()) .map (|(s,_)| s.as_str()) .unwrap_or("")
+    }
+    pub fn is_identity (&self) -> bool {
+        self.get() == COLOR_EFF__IDENTITY
+    }
 }
 
 
 
-static COLOR_EFFECTS : OnceLock <ColorEffects> = OnceLock::new();
+impl ColorEffectAtomic {
+
+    pub fn new (effect : ColorEffect) -> ColorEffectAtomic {
+        ColorEffectAtomic (AtomicUsize::new (effect.0))
+    }
+    pub fn load (&self) -> ColorEffect {
+        ColorEffect (self.0 .load (Ordering::Relaxed))
+    }
+    pub fn store (&self, effect : ColorEffect) {
+        self.0.store (effect.0, Ordering::Release);
+    }
+
+    pub fn get (&self) -> MAGCOLOREFFECT {
+        self.load().get()
+    }
+
+    pub fn cycle (&self, forward: bool) -> ColorEffect {
+        let cyc_len = ColorEffects::instance().cycle_order.len();
+        let incr = if forward { cyc_len + 1 } else { cyc_len -1 };
+        let update_fn = |cur| Some ((cur + incr) % cyc_len);
+        let prior_idx = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
+        let new_idx = update_fn (prior_idx.unwrap_or_else(|e| e)) .unwrap();
+        ColorEffect (new_idx)
+    }
+}
+
+
 
 
 impl ColorEffects {
@@ -83,7 +141,12 @@ impl ColorEffects {
         let default = ColorEffect (default_id);
         info! ("loaded default color-effect as : {:?}", (default, &default_effect));
 
-        COLOR_EFFECTS .get_or_init ( || ColorEffects { cycle_order, default } )
+        let default_fs_effect = &conf.get_effects_full_screen_default();
+        let default_fs_id = cycle_order .iter().find_position (|(s,_)| s == default_fs_effect) .map (|(idx, _)| idx) .unwrap_or(0);
+        let default_fs = ColorEffect (default_fs_id);
+        info! ("loaded default full-screen color-effect as : {:?}", (default_fs, &default_fs_effect));
+
+        COLOR_EFFECTS .get_or_init ( || ColorEffects { cycle_order, default, default_fs } )
 
     }
 
@@ -94,61 +157,3 @@ impl ColorEffects {
     }
 
 }
-
-
-
-
-
-#[derive (Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub struct ColorEffect (pub usize);
-
-#[derive (Debug, Default)]
-pub struct ColorEffectAtomic (AtomicUsize);
-
-
-impl ColorEffect {
-    pub fn get (&self) -> MAGCOLOREFFECT {
-        let cycler = &ColorEffects::instance().cycle_order;
-        cycler .get (self.0 % cycler.len()) .map (|(_,v)| *v) .unwrap_or (COLOR_EFF__FALLBACK_DEFAULT)
-    }
-    pub fn name (&self) -> &'static str {
-        let cycler = &ColorEffects::instance().cycle_order;
-        cycler .get (self.0 % cycler.len()) .map (|(s,_)| s.as_str()) .unwrap_or("")
-    }
-    pub fn is_identity (&self) -> bool {
-        self.get() == COLOR_EFF__IDENTITY
-    }
-}
-
-impl From <&ColorEffectAtomic> for ColorEffect {
-    fn from (eff: &ColorEffectAtomic) -> Self {
-        ColorEffect (eff.0 .load(Ordering::Relaxed))
-    }
-}
-
-impl ColorEffectAtomic {
-
-    pub fn new (effect : ColorEffect) -> ColorEffectAtomic {
-        ColorEffectAtomic (AtomicUsize::new (effect.0))
-    }
-    pub fn store (&self, effect : ColorEffect) {
-        self.0.store (effect.0, Ordering::Release);
-    }
-
-    pub fn get (&self) -> MAGCOLOREFFECT {
-        ColorEffect::from(self).get()
-    }
-
-    pub fn cycle (&self, forward: bool) -> ColorEffect {
-        let cyc_len = ColorEffects::instance().cycle_order.len();
-        let incr = if forward { cyc_len + 1 } else { cyc_len -1 };
-        let update_fn = |cur| Some ((cur + incr) % cyc_len);
-        let prior_idx = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
-        let new_idx = update_fn (prior_idx.unwrap_or_else(|e| e)) .unwrap();
-        ColorEffect (new_idx)
-    }
-
-
-}
-
-

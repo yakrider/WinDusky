@@ -47,6 +47,10 @@ impl HwndAtomic {
     pub fn store (&self, hwnd: impl Into<Hwnd>) {
         self.0 .store (hwnd.into().0, Ordering::Release)
     }
+    /// swap stores new state and returns prior state .. better to use this than to update and check/load separately
+    pub fn swap   (&self, hwnd: impl Into<Hwnd>) -> Hwnd {
+        Hwnd (self.0 .swap (hwnd.into().0, Ordering::AcqRel))
+    }
     pub fn clear (&self) {
         self.store (Hwnd(0))
     }
@@ -82,11 +86,11 @@ impl Flag {
     */
     pub fn new (state:bool) -> Flag { Flag (AtomicBool::new(state)) }
 
-    /// toggling returns prior state .. better to use this than to check and set
-    pub fn toggle (&self) -> bool { self.0 .fetch_xor (true, Ordering::AcqRel) }
-
     /// swap stores new state and returns prior state .. better to use this than to update and check/load separately
     pub fn swap   (&self, state:bool) -> bool { self.0 .swap (state, Ordering::AcqRel) }
+
+    /// toggling returns prior state .. better to use this than to check and set
+    pub fn toggle (&self) -> bool { self.0 .fetch_xor (true, Ordering::AcqRel) }
 
     pub fn set   (&self) { self.0 .store (true,  Ordering::Release) }
     pub fn clear (&self) { self.0 .store (false, Ordering::Release) }

@@ -42,7 +42,10 @@ thiserror = "2.0"
 minifb = "0.28.0"
 strum = "0.27"
 strum_macros = "0.27"
+mslnk = "0.1"
 
+#planif = "1.0.0"
+planif = { git = "https://github.com/yakrider/planif.git", branch = "yakrider" }
 
 
 [target.'cfg(windows)'.dependencies.windows]

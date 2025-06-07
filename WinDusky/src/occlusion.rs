@@ -81,7 +81,7 @@ impl Rect {
             if isect.right < self.right {   // right slice (within isect height)
                 out.push ( Rect { left: isect.right, right: self.right,  ..isect });
             }
-            // we return true to indicate instersection and substraction was performed
+            // we return true to indicate intersection and subtraction was performed
             return true
         }
 
@@ -146,7 +146,7 @@ unsafe extern "system" fn enum_windows_proc (hwnd: HWND, lparam: LPARAM) -> BOOL
 
     let batch = &mut *(lparam.0 as *mut BatchDat);
     if batch.hosts.contains (&hwnd.into()) { return TRUE; }
-    // ^^ host hwnds always ovelay targets, no point processing them separately
+    // ^^ host hwnds always overlay targets, no point processing them separately
 
     // Get the rectangle of src window causing potential occlusion
     let mut rect = RECT::default();
@@ -205,7 +205,7 @@ unsafe extern "system" fn enum_windows_proc (hwnd: HWND, lparam: LPARAM) -> BOOL
 
 
 /// Calculates the un-occluded status of target HWNDs.
-/// Returns a mapping of Hwnd to a bounding rect of the un-occluded regiions, if any
+/// Returns a mapping of Hwnd to a bounding rect of the un-occluded regions, if any
 pub fn calc_viz_bounds <I> (wd: &WinDusky, targets: I) -> Result <Vec <(Hwnd, Option<Rect>)>> where
     I : IntoIterator <Item = Hwnd>,
     I::IntoIter : ExactSizeIterator

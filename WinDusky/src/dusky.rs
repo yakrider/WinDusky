@@ -118,7 +118,7 @@ impl WinDusky {
     pub fn init (conf: &'static config::Config) -> Result <&'static WinDusky, String> { unsafe {
 
         if WIN_DUSKY.get().is_some() {
-            return Err ("WinDusky was allready started!!".into());
+            return Err ("WinDusky was already started!!".into());
         }
 
         let _ = SetProcessDpiAwarenessContext (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -178,6 +178,8 @@ impl WinDusky {
         self.gamma_active.store (self.conf.check_flag__gamma_at_startup());
         self.gamma_preset.store (self.presets.default);
         if self.gamma_active.is_set() { self.update_gamma_state(); }
+
+        tray::update_tray__autostart_state();
 
         // finally we just babysit the message loop
         let mut msg: MSG = std::mem::zeroed();
@@ -551,7 +553,7 @@ impl WinDusky {
     pub fn post_req__overlay_create      (&self, targ:Hwnd, eff:ColorEffect) { self.post_req (DuskyReq::OverlayCreate, Some(targ), Some(eff.0)) }
     pub fn post_req__overlay_remove      (&self, targ:Hwnd) { self.post_req (DuskyReq::OverlayRemove, Some(targ), None) }
 
-    pub fn post_req__quit (&self) { unsafe {
+    pub fn post_req__exit (&self) { unsafe {
         let _ = PostThreadMessageW (self.thread_id, WM_DESTROY, WPARAM (0), LPARAM(0));
     } }
 

@@ -4,13 +4,15 @@ use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::mem::zeroed;
 use std::sync::{LazyLock, Mutex, RwLock};
-
 use std::os::windows::prelude::{OsStrExt, OsStringExt};
+use tracing::error;
+
 use windows::core::{BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH, POINT};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE, HWND, LPARAM, MAX_PATH, POINT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::*;
+use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -179,6 +181,33 @@ pub fn get_proc_info (hwnd: Hwnd) -> Option <ProcessInfo> { unsafe {
 
 } }
 
+
+
+
+pub fn get_cur_user_name () -> Option<String> {
+    match _get_cur_user_name() {
+        Ok (res) => Some(res),
+        Err (e) => {
+            error!("Error getting current user name : {:?}", e);
+            None
+    }  }
+}
+pub fn _get_cur_user_name () -> windows::core::Result<String> { unsafe {
+    // we'll put some default size enough for most cases, but if name too long, we'll allocate and requery
+    let mut name_len = 256;
+    let mut buf = vec![0u16; name_len as usize];
+    if GetUserNameW  (Some (PWSTR (buf.as_mut_ptr())), &mut name_len) .is_ok() {
+        let name = PWSTR (buf.as_mut_ptr()) .to_string()?;
+        return Ok(name)
+    }
+    if GetLastError() != ERROR_INSUFFICIENT_BUFFER {
+        return Err (windows::core::Error::from_win32())
+    }
+    buf.resize (name_len as usize, 0);
+    GetUserNameW  (Some (PWSTR (buf.as_mut_ptr())), &mut name_len)?;
+    let name = PWSTR (buf.as_mut_ptr()) .to_string()?;
+    Ok (name)
+} }
 
 
 

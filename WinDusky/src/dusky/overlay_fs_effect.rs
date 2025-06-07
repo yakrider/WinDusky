@@ -83,7 +83,7 @@ impl FullScreenOverlay {
 
     fn apply_color_effect (&self, effect: MAGCOLOREFFECT) { unsafe {
         if ! MagSetFullscreenColorEffect (&effect) .as_bool() {
-            error! ("Error settting Fullscreen Color Effect : {:?}", GetLastError());
+            error! ("Error setting Fullscreen Color Effect : {:?}", GetLastError());
         }
     } }
 

@@ -32,6 +32,12 @@ logging_level = "INFO"
 
 
 
+# Also, just a note that the tray-menu for the app has an option to setup autostart for the app, including auto-start as admin.
+# Any applications running elevated (i.e. as admin) can only have WinDusky effects overlain on them if WinDusky is running elevated too.
+# To setup autostart as admin, first the application should be started elevated, then the context menu will allow elevated-auto-start setup
+# Further, while running elevated, the menu options will also allow generating a shortcut to launch elevated if so desired
+# The elevated launch shortcut generated that way will be placed in the same config/log location as above, and named 'WinDusky_elev'
+
 
 
 

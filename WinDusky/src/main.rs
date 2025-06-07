@@ -22,8 +22,7 @@ mod luminance;
 mod occlusion;
 mod tray;
 mod win_utils;
-
-
+mod autostart;
 
 fn main() {
 

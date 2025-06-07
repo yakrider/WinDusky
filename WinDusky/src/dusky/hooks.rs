@@ -99,7 +99,7 @@ impl WinDusky {
             EVENT_SYSTEM_FOREGROUND => {
                 // first, since we drive dusky from krusty-qbar, we'll ignore any fgnds from interacting there
                 // plus we'll filter out our own windows (from tray-icon), or the tray-window itself
-                // (this should make toggling based on cached-fgnd have less undeisrable surprises)
+                // (this should make toggling based on cached-fgnd have less undesirable surprises)
                 if win_utils::get_exe_by_hwnd (hwnd) .is_some_and (|exe| {
                     exe == "krustyboard.exe" ||
                         exe == "WinDusky.exe" ||

@@ -107,7 +107,7 @@ impl ColorEffectAtomic {
 impl ColorEffects {
 
     pub fn instance() -> &'static ColorEffects {
-       COLOR_EFFECTS .get() .expect ("ColorEffects not iniitialized yet !!")
+       COLOR_EFFECTS .get() .expect ("ColorEffects not initialized yet !!")
     }
 
     pub fn init (conf: &config::Config) -> &'static ColorEffects {

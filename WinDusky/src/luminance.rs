@@ -2,7 +2,7 @@
 
 use crate::types::Hwnd;
 use std::ops::Not;
-use tracing::{info, warn};
+use tracing::{warn};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::*;
@@ -211,6 +211,7 @@ pub fn calculate_avg_luminance (hwnd: Hwnd, use_bitblt: bool) -> Option<u8> {
 /// * `use_bitblt` - If true, uses `BitBlt`; otherwise uses `PrintWindow`.
 #[cfg(debug_assertions)]
 pub fn debug_display_hwnd_capture(hwnd: Hwnd, use_bitblt: bool) {
+    use tracing::{debug, info, warn};
     let capture_method = if use_bitblt { "BitBlt" } else { "PrintWindow" };
     info! ("Attempting debug capture for {:?} using {}", hwnd, capture_method);
 
@@ -218,7 +219,7 @@ pub fn debug_display_hwnd_capture(hwnd: Hwnd, use_bitblt: bool) {
 
         let (width, height) = (width as usize, height as usize);
 
-        tracing::debug! ("Capture successful ({}x{}). Converting buffer format.", width, height);
+        debug! ("Capture successful ({}x{}). Converting buffer format.", width, height);
 
         if width * height > 4096*4096 { return; }   // for safety
 

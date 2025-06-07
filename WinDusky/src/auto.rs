@@ -75,7 +75,7 @@ pub struct AutoOverlay {
     // .. A value of 0 means luminance based auto-overlay is to be disabled
 
     pub auto_overlay_lum__use_bitblt : bool,
-    // ^^ whether the confs specify to use BitBlt (the altternate method) instead of the default PrintWindow
+    // ^^ whether the confs specify to use BitBlt (the alternate method) instead of the default PrintWindow
 
     pub auto_overlay_lum__delay_ms : u32,
     // ^^ since many windows even for dark-mode apps come up white before they get painted, we'll add a configurable delay
@@ -273,7 +273,7 @@ impl AutoOverlay {
 
 
         // so looks like this is first ever fgnd for this, so we'd like to eval from scratch ..
-        // .. but eval for luminance requies screen cap, so we'll spawn thread to do all that
+        // .. but eval for luminance requires screen cap, so we'll spawn thread to do all that
         thread::spawn ( move || {
             //tracing::debug! ("Processing Auto-Overlay for new {:?}", hwnd);
 

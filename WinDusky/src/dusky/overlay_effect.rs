@@ -97,7 +97,7 @@ impl Overlay {
             return Err (format! ("CreateOverlay failed for {target:?} .. Hwnd not a window!!"))
         }
 
-        // Create the host for the magniier control
+        // Create the host for the magnifier control
         let Ok(host) = CreateWindowExW (
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR::from_raw (wide_string (HOST_WINDOW_CLASS_NAME).as_ptr()),

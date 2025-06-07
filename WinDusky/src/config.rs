@@ -139,7 +139,7 @@ impl Config {
         }
         None
     }
-    pub fn get_log_loc (&self) -> Option<PathBuf> {
+    pub fn get_config_loc (&self) -> Option<PathBuf> {
         if let Some (conf_path) = self.get_config_file() {
             if let Some (conf_loc) = conf_path.parent() {
                 return Some (conf_loc.to_path_buf());
@@ -148,6 +148,11 @@ impl Config {
     }
 
 
+    pub fn trigger_config_loc_open (&'static self) {
+        if let Some(conf_loc) = self.get_config_loc() {
+            let _ = std::process::Command::new("cmd").arg("/c").arg("start").arg(conf_loc).spawn();
+        }
+    }
     pub fn trigger_config_file_edit (&'static self) {
         if let Some(conf_path) = self.get_config_file() {
             let _ = std::process::Command::new("cmd").arg("/c").arg("start").arg(conf_path).spawn();
@@ -194,7 +199,7 @@ impl Config {
             return Err(())
         }
 
-        if let Some(log_loc) = self.get_log_loc() {
+        if let Some(log_loc) = self.get_config_loc() {
 
             let log_appender = RollingFileAppender::builder()
                 .rotation(Rotation::DAILY)

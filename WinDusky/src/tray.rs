@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use crate::dusky::{WinDusky, MagEffect, MAG_EFFECT_IDENTITY};
 use crate::effects::{ColorEffect};
 use crate::presets::GammaPreset;
 use crate::types::Hwnd;
-use crate::win_utils;
+use crate::{autostart, win_utils};
 
 
 
@@ -53,6 +53,8 @@ pub enum DuskyEvent {
     MenuAction (MenuEvent),
 
     AutoOverlayEnable (bool),
+
+    UpdateAutoStart { elevated: bool, autostart_enabled: bool, elev_autostart_enabled: bool, elev_link_created: bool },
 
     #[allow (unused)]
     // ^^ we stopped using 'effect' below when centralizing effects-update which looks into fs-overlay itself
@@ -87,7 +89,6 @@ impl DuskyEvent {
 #[derive (Debug, EnumString, AsRefStr)]
 #[strum (serialize_all = "snake_case")]
 enum MenuId {
-    Elevated,
     FullScreenMode,
     AutoOverlayEnabled,
 
@@ -103,16 +104,24 @@ enum MenuId {
     PresetsSubNone,
     MagSubNone,
 
+    Configs,
+    Version,
+    AutoStart,
+    AutoStartElev,
+    GenElevLink,
     EditConf,
     ResetConf,
+    OpenConfLoc,
+
     Restart,
-    Quit,
+    Exit,
 }
 
 
 impl MenuId {
     fn text (&self) -> &str {
         use MenuId::*;
+        static VERSION : LazyLock <String> = LazyLock::new (|| format! ("(WinDusky v{:})", env!("CARGO_PKG_VERSION")));
         match self {
             FullScreenMode     => "Enable Full Screen Effect",
             AutoOverlayEnabled => "Auto Overlay Enabled",
@@ -129,12 +138,17 @@ impl MenuId {
             PresetsSubNone    => "(Preset: None)",
             MagSubNone        => "(Level: None)",
 
-            EditConf   => "Edit Config",
-            ResetConf  => "Reset Config",
-            Restart    => "Restart",
-            Quit       => "Quit",
+            Configs        => "Configs",
+            Version        => &VERSION,
+            AutoStart      => "Auto Start on Login",
+            AutoStartElev  => "Auto Start as Admin",
+            GenElevLink    => "Create Elev Launch Link",
+            OpenConfLoc    => "Open Config Location",
+            EditConf       => "Edit Config File",
+            ResetConf      => "Reset Config File",
 
-            _ => "",
+            Restart  => "Restart",
+            Exit     => "Exit",
         }
     }
 }
@@ -177,10 +191,10 @@ struct TrayDat {
 
     #[allow (unused)]
     tray : TrayIcon,
-    // ^^ we mignt not reference this in code, but it must remain in scope to avoid dropping the tray-icon itself!
+    // ^^ we might not reference this in code, but it must remain in scope to avoid dropping the tray-icon itself!
 
     full_screen_mode : CheckMenuItem,
-    auto_ov_enabled : CheckMenuItem,
+    auto_ov_enabled  : CheckMenuItem,
 
     presets    : Vec <PresetsSubMenuEntry>,
     mag_levels : Vec <MagSubMenuEntry>,
@@ -199,6 +213,10 @@ struct TrayDat {
     effects_none   : CheckMenuItem,
     overrides_none : CheckMenuItem,
     overlays_none  : CheckMenuItem,
+
+    auto_start       : CheckMenuItem,
+    auto_start_elev  : CheckMenuItem,
+    elev_launch_link : CheckMenuItem,
 }
 
 
@@ -216,20 +234,29 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
         Submenu::with_id (m.as_ref(), m.text(), enabled)
     }
 
-    let is_elev = win_utils::check_cur_proc_elevated().unwrap_or_default();
-    let elev_str = if is_elev { "Elevated : YES " } else { "Elevated : NO" };
-    let elevated = CheckMenuItem::with_id (MenuId::Elevated.as_ref(), elev_str, false, is_elev, None);
+    let sep = PredefinedMenuItem::separator();
 
     let full_screen_mode = make_menu_check (MenuId::FullScreenMode, true, false);
     let auto_ov_enabled  = make_menu_check (MenuId::AutoOverlayEnabled, true, true);
 
-    let edit_conf  = make_menu_item (MenuId::EditConf, true);
-    let reset_conf = make_menu_item (MenuId::ResetConf, true);
+    let is_elev = win_utils::check_cur_proc_elevated().unwrap_or_default();
+    let auto_start       = make_menu_check (MenuId::AutoStart,     !is_elev, false);
+    let auto_start_elev  = make_menu_check (MenuId::AutoStartElev,  is_elev, false);
+    let elev_launch_link = make_menu_check (MenuId::GenElevLink,    is_elev, false);
+
+    let version       = make_menu_item (MenuId::Version, false);
+    let open_conf_loc = make_menu_item (MenuId::OpenConfLoc, true);
+    let edit_conf     = make_menu_item (MenuId::EditConf, true);
+    let reset_conf    = make_menu_item (MenuId::ResetConf, true);
+
+    let conf_submenu  = make_sub_menu (MenuId::Configs, true);
+    let _ = conf_submenu .append_items ( &[ &version, &sep ] );
+    let _ = conf_submenu .append_items ( &[ &auto_start, &auto_start_elev, &elev_launch_link, &sep ] );
+    let _ = conf_submenu .append_items ( &[ &open_conf_loc, &edit_conf, &reset_conf ] );
 
     let restart = make_menu_item (MenuId::Restart, true);
-    let quit    = make_menu_item (MenuId::Quit, true);
+    let exit    = make_menu_item (MenuId::Exit, true);
 
-    let sep = PredefinedMenuItem::separator();
 
 
     // For overlays, since they are dynamic, we'll need them to be mutable, and restrict usage to events_handler
@@ -245,8 +272,8 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
     let _ = overrides_submenu.append (&overrides_none as _);
 
 
-    // for effects, presets, mag .. the menu-items are static, and we can directly build them here
 
+    // for effects, presets, mag .. the menu-items are static, and we can directly build them here
     let effects = wd.effects .cycle_order .iter().enumerate() .map ( |(i,p)| {
         let effect = ColorEffect(i);
         let id = MenuPrefix::Effect.id(i);
@@ -258,6 +285,7 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
     let effects_none = make_menu_check  (MenuId::EffectsSubNone, true, false);
     let _ = effects_submenu.append (&effects_none as _);
     let _ = effects_submenu.append_items (effects .iter() .map (|p| &p.menu_item as _) .collect::<Vec<_>>() .as_slice());
+
 
 
     let presets = wd.presets .cycle_order .iter().enumerate() .map ( |(i,p)| {
@@ -291,12 +319,11 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
 
     let tray_menu = Menu::new();
     let _ = tray_menu .append_items ( &[
-        &elevated, &sep, &sep,
         &full_screen_mode, &auto_ov_enabled, &overlays_submenu, &overrides_submenu, &effects_submenu, &sep, &sep,
         &presets_submenu, &sep, &sep,
         &mag_submenu, &sep, &sep,
-        &edit_conf ,&reset_conf, &sep, &sep,
-        &restart, &quit
+        &conf_submenu, &sep,
+        &restart, &exit
     ] );
 
     let tray = TrayIconBuilder::new()
@@ -310,6 +337,7 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
         overlays, overrides, effects, presets, mag_levels,
         overlays_submenu, overrides_submenu, effects_submenu, presets_submenu, mag_submenu,
         overlays_none, overrides_none, effects_none, presets_none, mag_none,
+        auto_start, auto_start_elev, elev_launch_link,
     }
 }
 
@@ -318,6 +346,21 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
 
 
 // we'll set up a bunch of helper fns to handle the various actions/events
+
+fn auto_start__update_state (
+    tray: &TrayDat, elevated: bool, autostart_enabled: bool, elev_autostart_enabled: bool, elev_link_created: bool,
+) {
+    tray.auto_start       .set_checked (autostart_enabled);
+    tray.auto_start_elev  .set_checked (elev_autostart_enabled);
+    tray.elev_launch_link .set_checked (elev_link_created);
+
+    tray.auto_start_elev  .set_enabled (elevated);
+    tray.elev_launch_link .set_enabled (elevated);
+    // ^^ elev parts of menu are always enabled when we're elev
+
+    tray.auto_start .set_enabled (autostart_enabled || !elev_autostart_enabled);
+    // ^^ non-elev menu is enabled only when it can be acted on (either its already enabled, or elev-task is not enabled)
+}
 
 fn eff_str (effect: Option <ColorEffect>) -> String {
     format! ("(Effect: {:.50})", effect .map (|e| e.name()) .unwrap_or("None"))
@@ -462,7 +505,7 @@ fn overrides_menu__rebuild_submenu (tray: &mut TrayDat) {
 
 
 fn effects_menu__exec_action (id: &str, tray: &TrayDat) {
-    // note below that actual checked-state etc updates are inteded to happen when the actions below cycle back w tray-updates
+    // note below that actual checked-state etc updates are intended to happen when the actions below cycle back w tray-updates
     if let Some(effect) = tray.effects .iter() .find (|p| p.id == id) {
         tray.wd.post_req__toggle_selected_eff (effect.effect);
     }
@@ -589,6 +632,7 @@ fn exec_menu_action (id: &str, tray: &TrayDat) {
     match MenuId::from_str(id) {
         Ok (m) => match m {
 
+
             FullScreenMode     => { tray.wd.post_req__toggle_fs_mode(); }
             AutoOverlayEnabled => { tray.wd.auto.toggle_auto_overlay_enabled(); }
 
@@ -598,10 +642,16 @@ fn exec_menu_action (id: &str, tray: &TrayDat) {
             PresetsSubNone    => { tray.wd.post_req__toggle_gamma_preset(); }
             MagSubNone        => { tray.wd.post_req__toggle_mag_level(); }
 
-            EditConf   => { tray.wd.conf.trigger_config_file_edit(); }
-            ResetConf  => { tray.wd.conf.trigger_config_file_reset(); }
+            AutoStart      => { autostart::proc_req__toggle_dusky_autostart (false) }
+            AutoStartElev  => { autostart::proc_req__toggle_dusky_autostart (true) }
+            GenElevLink    => { autostart::proc_req__toggle_elev_launch_link_gen() }
+
+            OpenConfLoc => { tray.wd.conf.trigger_config_loc_open(); }
+            EditConf    => { tray.wd.conf.trigger_config_file_edit(); }
+            ResetConf   => { tray.wd.conf.trigger_config_file_reset(); }
+
             Restart    => { handle_restart_request(tray.wd); }
-            Quit       => { tray.wd.post_req__quit(); }
+            Exit       => { tray.wd.post_req__exit(); }
 
             _ => { error! ("Unrecognized menu-id : {id}") }
         },
@@ -676,7 +726,9 @@ fn handle_events (event: DuskyEvent, tray: &mut TrayDat) {
         DuskyEvent::MenuAction (event) => {
             exec_menu_action (&event.id.0, tray);
         }
-
+        DuskyEvent::UpdateAutoStart { elevated, autostart_enabled, elev_autostart_enabled, elev_link_created } => {
+            auto_start__update_state (tray, elevated, autostart_enabled, elev_autostart_enabled, elev_link_created);
+        }
         DuskyEvent::AutoOverlayEnable (enabled) => {
             tray.auto_ov_enabled.set_checked (enabled);
             tray.auto_ov_enabled.set_text (if enabled {"Auto Overlay Enabled"} else {"Enable Auto Overlay"})
@@ -793,7 +845,7 @@ pub fn start_system_tray_monitor (wd: &'static WinDusky) {
 
 
 
-// we'll setup a bunch of fns to handlebe called from external threads to inject events into sys-tray loop for updates etc
+// we'll setup a bunch of fns to be called from external threads to inject events into sys-tray loop for updates etc
 
 pub fn update_tray__full_screen_mode (enabled:bool, effect: Option <ColorEffect>) {
     DuskyEvent::FullScreenMode {enabled, effect} .send();
@@ -834,6 +886,17 @@ pub fn update_tray__overlay_fgnd () {
     DuskyEvent::OverlayFgnd .send();
 }
 
+pub fn update_tray__autostart_state () {
+    // note that this is on a spawned thread because checking task-sched via the planif crate seems to change thread mode !!
+    thread::spawn ( move || {
+        let elevated = win_utils::check_cur_proc_elevated() .unwrap_or_default();
+        let autostart_enabled = autostart::check_status_auto_start_task();
+        let elev_autostart_enabled = autostart::check_status_auto_start_elev_task();
+        let elev_link_created = autostart::check_elev_launch_link_exists();
+        DuskyEvent::UpdateAutoStart { elevated, autostart_enabled, elev_autostart_enabled, elev_link_created } .send()
+    } );
+}
+
 
 
 
@@ -862,7 +925,7 @@ fn handle_restart_request (wd: &'static WinDusky) {
         //thread::sleep (Duration::from_millis (100));
         //std::process::exit(0);
 
-        wd.post_req__quit();
+        wd.post_req__exit();
 
     });
 

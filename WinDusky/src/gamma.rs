@@ -48,15 +48,15 @@ impl GBC {
     pub fn create_gamma_ramp (&self) -> [[u16; 256]; 3] {
         let max_gamma = 4.4f32;
         let min_gamma = 0.3f32;
-        let gamma = self.gamma.clamp(min_gamma, max_gamma);
+        let gamma = self.gamma .clamp (min_gamma, max_gamma);
 
         let max_bright = 1.0f32;
         let min_bright = -1.0f32;
-        let bright = self.bright.clamp(min_bright, max_bright);
+        let bright = (self.bright - 1.0) .clamp (min_bright, max_bright);
 
         let max_contrast = 100.0f32;
         let min_contrast = 0.1f32;
-        let contrast = self.contrast.clamp(min_contrast, max_contrast);
+        let contrast = self.contrast .clamp (min_contrast, max_contrast);
 
         let inv_gamma = 1.0 / gamma as f64;
         let norm = 255.0f64.powf(inv_gamma - 1.0);

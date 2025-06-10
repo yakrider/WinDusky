@@ -137,17 +137,17 @@ apply_gamma_preset_at_startup = true
 
 # Definition of gamma-preset entries (including the gamma, brightness, contrast, and color-temp values)
 # Each preset has a name and values for gamma, brightness, contrast (GBC), and color-temp values
-# The Gamma and Contrast are floating point values around 1.0, while Brightness is float value around 0.0
-# The color-temp is in K, and the default is 6500 as conventional. A night-mode (reddish) color-temp might be around 5800
+# The GBC parameters are floating point values centered around 1.0, usually within [0.0 .. 2.0] range
+# The color-temp is in Kelvin, and the default is 6500 as conventional. A night-mode (reddish) color-temp might be around 5800
 # When applying the preset, first the GBC ramp is calculated, then the color-temp effect is blended on top
 #
 # Note that the simple GUI utility Gamgee (github.com/yakrider/Gamgee) can be used to tweak/explore the values below
 #
 gamma_presets = [
-    { preset = "Normal",  gamma = 1.00,  brightness =  0.00,  contrast = 1.00,  color_temp = 6500 },
-    { preset = "Dark",    gamma = 1.10,  brightness = -0.25,  contrast = 0.90,  color_temp = 6000 },
-    { preset = "Darker",  gamma = 1.20,  brightness = -0.50,  contrast = 0.80,  color_temp = 6000 },
-    { preset = "Bright",  gamma = 1.15,  brightness =  0.08,  contrast = 1.00,  color_temp = 6500 }
+    { preset = "Normal",  gamma = 1.00,  brightness =  1.00,  contrast = 1.00,  color_temp = 6500 },
+    { preset = "Dark",    gamma = 1.10,  brightness =  0.75,  contrast = 0.90,  color_temp = 6000 },
+    { preset = "Darker",  gamma = 1.20,  brightness =  0.50,  contrast = 0.80,  color_temp = 6000 },
+    { preset = "Bright",  gamma = 1.15,  brightness =  1.08,  contrast = 1.00,  color_temp = 6500 }
 ]
 
 
@@ -227,7 +227,9 @@ auto_overlay_window_classes = [
 # List of effect names defining the order for cycling (using Alt+Win+Period/Comma)
 # Names must match the keys defined in the [color_effects] table below.
 # Users can reorder, add, or remove names from this list (as long as they exist in [effects] table).
+#
 # Credit for many of these: https://github.com/mlaily/NegativeScreen
+#
 effects_cycle_order = [
 
     "Simple Inversion",
@@ -255,6 +257,40 @@ effects_cycle_order = [
     "Black and White",
 
     "Identity",
+
+    "Dynamic - Brightness - 1.05",
+    "Dynamic - Brightness - 1.10",
+
+    "Identity",
+
+    "Dynamic - Contrast - 1.2",
+    "Dynamic - Contrast - 1.4",
+    "Dynamic - Contrast - 1.6",
+    "Dynamic - Contrast - 1.8",
+
+    "Identity",
+
+    "Dynamic - Saturation - 1.2",
+    "Dynamic - Saturation - 1.4",
+    "Dynamic - Saturation - 1.6",
+    "Dynamic - Saturation - 1.8",
+
+    "Identity",
+
+    "Dynamic - Rotate - 60",
+    "Dynamic - Rotate - 120",
+    "Dynamic - Rotate - 180",
+    "Dynamic - Rotate - 240",
+    "Dynamic - Rotate - 300",
+
+    "Identity",
+
+    "Dynamic - Film - b-1.05__c-1.2__s-1.2",
+    "Dynamic - Film - b-1.05__c-1.2__s-1.4",
+    "Dynamic - Film - b-1.05__c-1.4__s-1.4",
+
+    "Identity",
+
 
     ## --- Color Blindness Simulations ---
     #"Color Blindness Simulation: Protanopia (Red-Green Color Blindness)",
@@ -289,6 +325,11 @@ effects_full_screen_default = "Grayscale"
 # Users can add their own custom effects here. Ensure the name is unique and the
 # transform array has exactly 25 floating-point numbers.
 #
+# Alternately, the effect spec can have a 'dynamic' table if a 'transform' is not specified
+# The 'dynamic' table can have entries for [brightness, contrast, saturation, hue_rotate]
+# 'hue_rotate' can be specified in integer numbers as degree of rotation in color space between [0 .. 360]
+# the others are deviation multipliers from the default of 1.0, and in range [0.0 .. 2.0] in floating point decimal
+#
 # Note that in toml format, root keys must be listed before any tables with square-brackets are started
 # So these [[effects]] tables MUST come at the end after all other root-level keys above
 #
@@ -302,6 +343,7 @@ transform =  [
     0.0,  0.0,  0.0,  1.0,  0.0,
     0.0,  0.0,  0.0,  0.0,  1.0,
 ]
+
 
 [[effects]]
 effect = "Simple Inversion"
@@ -362,6 +404,9 @@ transform =  [
       0.0,    0.0,    0.0,  1.0,  0.0,
       1.0,    1.0,    1.0,  0.0,  1.0,
 ]
+
+
+
 
 [[effects]]
 effect = "Negative Sepia"
@@ -473,6 +518,10 @@ transform =  [
      1.0,  0.0,  0.0,  0.0,  1.0,
 ]
 
+
+
+
+
 [[effects]]
 effect = "Grayscale"
 transform =  [
@@ -512,6 +561,91 @@ transform =  [
        0.0,     0.0,     0.0,  1.0,  0.0,
      180.0,   180.0,   180.0,  0.0,  1.0,
 ]
+
+
+
+
+
+[[effects]]
+effect = "Dynamic - Brightness - 1.05"
+dynamic = { brightness = 1.05 }
+
+[[effects]]
+effect = "Dynamic - Brightness - 1.10"
+dynamic = { brightness = 1.10 }
+
+
+
+[[effects]]
+effect = "Dynamic - Contrast - 1.2"
+dynamic = { contrast = 1.2 }
+
+[[effects]]
+effect = "Dynamic - Contrast - 1.4"
+dynamic = { contrast = 1.4 }
+
+[[effects]]
+effect = "Dynamic - Contrast - 1.6"
+dynamic = { contrast = 1.6 }
+
+[[effects]]
+effect = "Dynamic - Contrast - 1.8"
+dynamic = { contrast = 1.8 }
+
+
+
+[[effects]]
+effect = "Dynamic - Saturation - 1.2"
+dynamic = { saturation = 1.2 }
+
+[[effects]]
+effect = "Dynamic - Saturation - 1.4"
+dynamic = { saturation = 1.4 }
+
+[[effects]]
+effect = "Dynamic - Saturation - 1.6"
+dynamic = { saturation = 1.6 }
+
+[[effects]]
+effect = "Dynamic - Saturation - 1.8"
+dynamic = { saturation = 1.8 }
+
+
+
+[[effects]]
+effect = "Dynamic - Rotate - 60"
+dynamic = { hue_rotate = 60 }
+
+[[effects]]
+effect = "Dynamic - Rotate - 120"
+dynamic = { hue_rotate = 120 }
+
+[[effects]]
+effect = "Dynamic - Rotate - 180"
+dynamic = { hue_rotate = 180 }
+
+[[effects]]
+effect = "Dynamic - Rotate - 240"
+dynamic = { hue_rotate = 240 }
+
+[[effects]]
+effect = "Dynamic - Rotate - 300"
+dynamic = { hue_rotate = 300 }
+
+
+
+[[effects]]
+effect = "Dynamic - Film - b-1.05__c-1.2__s-1.2"
+dynamic = { brightness = 1.05, contrast = 1.2, saturation = 1.2 }
+
+[[effects]]
+effect = "Dynamic - Film - b-1.05__c-1.2__s-1.4"
+dynamic = { brightness = 1.05, contrast = 1.2, saturation = 1.4 }
+
+[[effects]]
+effect = "Dynamic - Film - b-1.05__c-1.4__s-1.4"
+dynamic = { brightness = 1.05, contrast = 1.4, saturation = 1.4 }
+
 
 
 

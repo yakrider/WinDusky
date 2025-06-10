@@ -19,8 +19,9 @@ use tracing_subscriber::{reload, Layer, Registry};
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 
 use toml_edit::{DocumentMut, Item, Table, Value};
+use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
-use crate::gamma;
+use crate::*;
 use crate::keys::VKey;
 
 
@@ -61,10 +62,29 @@ pub struct AutoOverlayClass {
 }
 
 
+
+#[derive (Debug)]
+pub struct DynamicEffectSpec {
+    pub brightness : f32,   // brightness : -1.0 .. 1.0
+    pub contrast   : f32,   // contrast   :  0.0 .. 2.0
+    pub saturation : f32,   // saturation :  0.0 .. 2.0
+    pub hue_rotate : f32,   // hue_rotate :    0 .. 360
+}
+
+impl DynamicEffectSpec {
+    pub fn new (brightness:f32, contrast:f32, saturation:f32, hue_rotate:f32) -> DynamicEffectSpec {
+        DynamicEffectSpec { brightness, contrast, saturation, hue_rotate }
+    }
+    pub fn effect (&self) -> MAGCOLOREFFECT {
+        effects::compose_dynamic (self)
+    }
+}
+
+
 #[derive (Debug)]
 pub struct ColorEffectSpec {
-    pub name : String,
-    pub transform : [f32; 25],
+    pub name   : String,
+    pub effect : MAGCOLOREFFECT,
 }
 
 
@@ -438,8 +458,19 @@ impl Config {
                 if matrix.len() == 25 {
                     let mut transform = [0.0f32; 25];
                     transform.copy_from_slice (&matrix);
-                    return Some ( ColorEffectSpec { name, transform } )
+                    let effect = MAGCOLOREFFECT { transform };
+                    return Some ( ColorEffectSpec { name, effect } )
                 }
+            }
+            else if let Some (Item::Value (Value::InlineTable(table))) = table .get("dynamic") {
+                let brightness = table .get("brightness") .and_then (|v| v.as_float() .map (|f| f as f32)) .unwrap_or (1.0);
+                let contrast   = table .get("contrast")   .and_then (|v| v.as_float() .map (|f| f as f32)) .unwrap_or (1.0);
+                let saturation = table .get("saturation") .and_then (|v| v.as_float() .map (|f| f as f32)) .unwrap_or (1.0);
+                let hue_rotate = table .get("hue_rotate") .and_then (|v| v.as_integer() .map (|v| v as f32)) .unwrap_or (0.0);
+
+                let spec = DynamicEffectSpec::new (brightness, contrast, saturation, hue_rotate);
+                //tracing::debug! ("loading: {spec:?}");
+                return Some ( ColorEffectSpec { name, effect: spec.effect() } )
             }
         }
         None

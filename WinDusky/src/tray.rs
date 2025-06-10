@@ -363,7 +363,7 @@ fn auto_start__update_state (
 }
 
 fn eff_str (effect: Option <ColorEffect>) -> String {
-    format! ("(Effect: {:.50})", effect .map (|e| e.name()) .unwrap_or("None"))
+    format! ("🗲(Effect: {:.50})", effect .map (|e| e.name()) .unwrap_or("None"))
 }
 fn update_ov_menu_text (entry: &OverlaysSubMenuEntry, last_fgnd_ov: Hwnd) {
     let prefix = if entry.hwnd == last_fgnd_ov {"🗲"} else {""};
@@ -822,7 +822,8 @@ pub fn start_system_tray_monitor (wd: &'static WinDusky) {
                 // .. but apparently we get events for a dummy-device ID (generic), and separately for src mouse, hence above filtering
                 match event {
                     DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta (dx, dy), .. } => {
-                        let is_fwd = dx > 0.0 || dy > 0.0;
+                        // we'll reverse the sense of 'fwd' for mouse to wheel scroll downwards
+                        let is_fwd = dx < 0.0 || dy < 0.0;
                         handle_wheel_action (is_fwd, &tray);
                     }
                     DeviceEvent::Button { button: 1, state : ElementState::Pressed, .. } => {

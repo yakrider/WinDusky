@@ -7,6 +7,7 @@ use tracing::info;
 use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
 use crate::*;
+use crate::config::DynamicEffectSpec;
 
 
 
@@ -115,7 +116,7 @@ impl ColorEffects {
         // lets load all the color-effects specified in conf first
         let mut effects : HashMap <String, MAGCOLOREFFECT> = HashMap::new();
         for effect in conf.get_color_effects() {
-            let _ = effects .insert ( effect.name, MAGCOLOREFFECT { transform: effect.transform } );
+            let _ = effects .insert ( effect.name, effect.effect );
         }
         // if no effects were defined, we'll at least populate with a default (simple inversion)
         if effects.is_empty() {
@@ -157,3 +158,108 @@ impl ColorEffects {
     }
 
 }
+
+
+
+
+
+#[allow (unused)]
+fn mix_effects (a: &MAGCOLOREFFECT, b: &MAGCOLOREFFECT, t: f32) -> MAGCOLOREFFECT {
+    let mut transform = [0.0f32; 25];
+    for (i, v) in transform.iter_mut().enumerate() {
+        *v = a.transform[i] * (1.0 - t) + b.transform[i] * t;
+    }
+    MAGCOLOREFFECT { transform }
+}
+
+
+pub fn compose_effects (a: &MAGCOLOREFFECT, b: &MAGCOLOREFFECT) -> MAGCOLOREFFECT {
+    let mut transform = [0.0f32; 25];
+    for row in 0..5 {
+        for col in 0..5 {
+            transform [row * 5 + col] = (0..5).map(|k| {
+                a.transform[row * 5 + k] * b.transform[k * 5 + col]
+            }).sum();
+        }
+    }
+    MAGCOLOREFFECT { transform }
+}
+
+
+pub fn compose_dynamic (spec:&DynamicEffectSpec) -> MAGCOLOREFFECT {
+    let mut eff = hue_rotation (spec.hue_rotate);
+    eff = compose_effects (&saturation (spec.saturation), &eff);
+    eff = compose_effects (&contrast   (spec.contrast),   &eff);
+    eff = compose_effects (&brightness (spec.brightness), &eff);
+    eff
+}
+
+
+
+
+fn hue_rotation (theta: f32) -> MAGCOLOREFFECT {
+
+    let theta = theta.to_radians();
+    let a = (1.0 + 2.0 * theta.cos()) / 3.0;
+    let b = (1.0 - theta.cos()) / 3.0;
+    let c = theta.sin() / (3f32.sqrt());
+
+    MAGCOLOREFFECT { transform : [
+        a,       b - c,    b + c,    0.0,   0.0,
+        b + c,   a,        b - c,    0.0,   0.0,
+        b - c,   b + c,    a,        0.0,   0.0,
+        0.0,     0.0,      0.0,      1.0,   0.0,
+        0.0,     0.0,      0.0,      0.0,   1.0,
+    ] }
+}
+
+
+fn brightness (lvl: f32) -> MAGCOLOREFFECT {
+
+    // dynamic spec params are [0.0 .. 2.0], but we want brightness values between [-1.0 .. 1.0]
+    let lvl = (lvl - 1.0) .clamp (-1.0, 1.0);
+
+    MAGCOLOREFFECT { transform : [
+        1.0,     0.0,     0.0,    0.0,   0.0,
+        0.0,     1.0,     0.0,    0.0,   0.0,
+        0.0,     0.0,     1.0,    0.0,   0.0,
+        0.0,     0.0,     0.0,    1.0,   0.0,
+        lvl,     lvl,     lvl,    0.0,   1.0,
+    ] }
+}
+
+
+fn contrast (lvl: f32) -> MAGCOLOREFFECT {
+
+    let lvl = lvl .clamp (0.0, 2.0);
+    let bias = (1.0 - lvl) / 2.0;
+
+    MAGCOLOREFFECT { transform : [
+        lvl,     0.0,     0.0,    0.0,   0.0,
+        0.0,     lvl,     0.0,    0.0,   0.0,
+        0.0,     0.0,     lvl,    0.0,   0.0,
+        0.0,     0.0,     0.0,    1.0,   0.0,
+       bias,    bias,    bias,    0.0,   1.0,
+    ] }
+}
+
+
+fn saturation (lvl: f32) -> MAGCOLOREFFECT {
+
+    // we'll use standard luminosity profile
+    //let (lr, lg, lb) = (0.213, 0.715, 0.072);
+    let (lr, lg, lb)   = (0.309, 0.609, 0.082);
+
+    let s = lvl .clamp (0.0, 2.0);
+    let ss = 1.0 - s;
+    let (sr, sg, sb) = (ss * lr,  ss * lg,  ss * lb);
+
+    MAGCOLOREFFECT { transform : [
+        s + sr,       sr,       sr,   0.0,   0.0,
+            sg,   s + sg,       sg,   0.0,   0.0,
+            sb,       sb,   s + sb,   0.0,   0.0,
+           0.0,      0.0,      0.0,   1.0,   0.0,
+           0.0,      0.0,      0.0,   0.0,   1.0,
+    ] }
+}
+

@@ -1,6 +1,6 @@
 [package]
 name = "win_dusky"
-version = "0.1.7"
+version = "0.1.8"
 authors = ["yakrider <yakrider@gmail.com>"]
 description = "Impose dark-mode on any window via color transformations"
 homepage = "https://github.com/yakrider/WinDusky"
@@ -39,10 +39,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["local-time"] }
 tracing-appender = "0.2"
 thiserror = "2.0"
-minifb = "0.28.0"
 strum = "0.27"
 strum_macros = "0.27"
 mslnk = "0.1"
+linked-hash-map = "0.5.6"
+
+minifb = "0.28.0"
+# ^^ minifb only for debug display of captured framebuffer (for lum based auto-ov)
 
 #planif = "1.0.0"
 planif = { git = "https://github.com/yakrider/planif.git", branch = "yakrider" }

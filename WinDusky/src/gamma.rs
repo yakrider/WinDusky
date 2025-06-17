@@ -14,13 +14,13 @@ use windows::Win32::UI::ColorSystem::{GetDeviceGammaRamp, SetDeviceGammaRamp};
 #[derive (Debug, Copy, Clone, PartialEq, PartialOrd)]
 pub struct GBC {
     gamma    : f32,   // default 1.0 .. expectation 0.0 and up
-    bright   : f32,   // default 0.0 .. expectation -1.0 to 1.0
-    contrast : f32,   // default 1.0 .. expectation  0.0 and up
+    bright   : f32,   // default 1.0 .. expectation 0.0 and up
+    contrast : f32,   // default 1.0 .. expectation 0.0 and up
     // todo .. ^^ update these comments with the clamp values we use
 }
 impl Default for GBC {
     fn default() -> GBC {
-        GBC { gamma : 1.0, bright : 0.0, contrast : 1.0 }
+        GBC { gamma : 1.0, bright : 1.0, contrast : 1.0 }
     }
 }
 

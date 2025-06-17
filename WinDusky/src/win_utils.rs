@@ -69,6 +69,10 @@ pub fn win_check_if_topmost (hwnd: Hwnd) -> bool { unsafe {
     GetWindowLongW (hwnd.into(), GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 == WS_EX_TOPMOST.0
 } }
 
+pub fn check_window_exists (hwnd:Hwnd) -> bool { unsafe {
+    IsWindow (Some (hwnd.into())) .as_bool()
+} }
+
 pub fn check_window_visible (hwnd:Hwnd) -> bool { unsafe {
     IsWindowVisible (hwnd.into()) .as_bool()
 } }

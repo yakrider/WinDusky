@@ -1303,6 +1303,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "linked-hash-map"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2874,11 +2880,12 @@ checksum = "53a85b86a771b1c87058196170769dd264f66c0782acf1ae6cc51bfd64b39082"
 
 [[package]]
 name = "win_dusky"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "dirs",
  "image",
  "itertools 0.14.0",
+ "linked-hash-map",
  "minifb",
  "mslnk",
  "planif",

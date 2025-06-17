@@ -94,6 +94,7 @@ impl WinDusky {
                     }
                 }
                 self.occl_marked.set();
+                tray::update_tray__fgnd_hwnd (None, false);
             }
 
             EVENT_SYSTEM_FOREGROUND => {
@@ -110,6 +111,7 @@ impl WinDusky {
                 }) {
                     return
                 }
+
                 // else we'll cache this as target for hotkeys actions (GetForegroundWindow  can return null during transitions etc)
                 self.fgnd_cache.store (hwnd);
 
@@ -118,14 +120,15 @@ impl WinDusky {
 
                 let overlays = self.overlays.read().unwrap();
 
-                // now if this hwnd already had overlays, we just mark it, and update our cache
+                // now if this hwnd already had overlays, we just mark it, update our cache, and kick tray update
                 if let Some(overlay) = overlays .get (&hwnd) {
                     overlay.marked.set();
-                    if hwnd != self.fgnd_ov_cache.swap (hwnd) {
-                        tray::update_tray__overlay_fgnd ();
-                    }
+                    self.fgnd_ov_cache.swap (hwnd);
+                    tray::update_tray__fgnd_hwnd (Some(hwnd), true);
                     return
                 }
+                tray::update_tray__fgnd_hwnd (Some(hwnd), false);
+
                 // so we got a non-overlain hwnd to fgnd .. so if we had any overlain hwnds on-top, we should clear them
                 if let Some(overlay) = overlays .get (&self.ov_topmost.load()) {
                     self.ov_topmost.clear();

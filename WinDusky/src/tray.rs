@@ -1,6 +1,6 @@
 #![allow (non_snake_case)]
 
-
+use std::collections::LinkedList;
 use std::io::Cursor;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use image::{ImageFormat, ImageReader};
 use itertools::Itertools;
+use linked_hash_map::LinkedHashMap;
 use strum_macros::{AsRefStr, EnumString};
 use tracing::{error, warn};
 
@@ -25,10 +26,9 @@ use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WIND
 use crate::dusky::{WinDusky, MagEffect, MAG_EFFECT_IDENTITY};
 use crate::effects::{ColorEffect};
 use crate::presets::GammaPreset;
-use crate::types::Hwnd;
+use crate::types::{Flag, Hwnd};
 use crate::{autostart, win_utils};
-
-
+use crate::win_utils::{check_window_exists, check_window_visible, check_window_cloaked};
 
 const ICON_BYTES: &[u8] = include_bytes!("../WinDusky_128.png");
 
@@ -65,7 +65,6 @@ pub enum DuskyEvent {
     OverlayCycled  { hwnd: Hwnd, effect: ColorEffect },
     OverlayRemoved { hwnd: Hwnd },
     OverlaysCount  { n_active : usize },
-    OverlayFgnd,
 
     OverrideAdded   { hwnd: Hwnd },
     OverrideRemoved { hwnd: Hwnd },
@@ -73,6 +72,10 @@ pub enum DuskyEvent {
 
     GammaState { applied: bool, succeeded: bool, preset: Option <GammaPreset> },
     MagLevel { level: Option <MagEffect> },
+
+    FgndHwnd { hwnd: Option<Hwnd>, has_overlay: bool },
+
+    RefreshMenus,
 }
 
 impl DuskyEvent {
@@ -94,6 +97,7 @@ enum MenuId {
 
     OverlaysSubmenu,
     OverridesSubmenu,
+    FgRecentsSubmenu,
     EffectsSubmenu,
     PresetsSubmenu,
     MagSubmenu,
@@ -126,8 +130,9 @@ impl MenuId {
             FullScreenMode     => "Enable Full Screen Effect",
             AutoOverlayEnabled => "Auto Overlay Enabled",
 
-            OverlaysSubmenu   => "Overlays : 0",
+            OverlaysSubmenu   => "Active Overlays : 0",
             OverridesSubmenu  => "User Overrides : 0",
+            FgRecentsSubmenu  => "Recent Windows",
             EffectsSubmenu    => "Color Effect : None",
             PresetsSubmenu    => "Gamma Preset : None",
             MagSubmenu        => "Magnification Level : None",
@@ -159,6 +164,7 @@ impl MenuId {
 #[strum (serialize_all = "snake_case")]
 enum MenuPrefix {
     Overlay,
+    FgRecent,
     Override,
     Effect,
     Preset,
@@ -184,6 +190,7 @@ struct MagSubMenuEntry       { id: String, menu_item: CheckMenuItem, level:  Mag
 struct EffectsSubMenuEntry   { id: String, menu_item: CheckMenuItem, effect: ColorEffect }
 struct OverridesSubMenuEntry { id: String, menu_item: CheckMenuItem, hwnd:Hwnd, exe:String, title:String }
 struct OverlaysSubMenuEntry  { id: String, menu_item: CheckMenuItem, hwnd:Hwnd, exe:String, title:String, effect:ColorEffect }
+struct FgRecentsSubMenuEntry { id: String, menu_item: CheckMenuItem, hwnd:Hwnd, exe:String, title:String }
 
 
 struct TrayDat {
@@ -196,23 +203,35 @@ struct TrayDat {
     full_screen_mode : CheckMenuItem,
     auto_ov_enabled  : CheckMenuItem,
 
-    presets    : Vec <PresetsSubMenuEntry>,
-    mag_levels : Vec <MagSubMenuEntry>,
+    overlays   : Vec <OverlaysSubMenuEntry>,
     effects    : Vec <EffectsSubMenuEntry>,
     overrides  : Vec <OverridesSubMenuEntry>,
-    overlays   : Vec <OverlaysSubMenuEntry>,
+    presets    : Vec <PresetsSubMenuEntry>,
+    mag_levels : Vec <MagSubMenuEntry>,
 
-    presets_submenu   : Submenu,
-    mag_submenu       : Submenu,
-    effects_submenu   : Submenu,
-    overrides_submenu : Submenu,
-    overlays_submenu  : Submenu,
+    fg_recents : LinkedHashMap <Hwnd, FgRecentsSubMenuEntry>,
+    // ^^ we'll use a limited cache of recent hwnds to let the user toggle effects directly
+    // Note that we'll keep a larger buffer than what we intend to display, partly to serve as cache for hwnd's exe etc
 
-    presets_none   : CheckMenuItem,
-    mag_none       : CheckMenuItem,
+    overlays_submenu   : Submenu,
+    fg_recents_submenu : Submenu,
+    effects_submenu    : Submenu,
+    overrides_submenu  : Submenu,
+    presets_submenu    : Submenu,
+    mag_submenu        : Submenu,
+
+    // we'll keep a bunch of flags to indicate submenus need rebuilding (instead of immediately rebuilding them)
+    // (note that we dont need these for gamma/mag as there are no auto/hook events of relevance there)
+    overlays_subs_dirty   : Flag,
+    fg_recents_subs_dirty : Flag,
+    effects_subs_dirty    : Flag,
+    overrides_subs_dirty  : Flag,
+
+    overlays_none  : CheckMenuItem,
     effects_none   : CheckMenuItem,
     overrides_none : CheckMenuItem,
-    overlays_none  : CheckMenuItem,
+    presets_none   : CheckMenuItem,
+    mag_none       : CheckMenuItem,
 
     auto_start       : CheckMenuItem,
     auto_start_elev  : CheckMenuItem,
@@ -265,7 +284,12 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
     let overlays_none = make_menu_check  (MenuId::OverlaysSubNone, true, false);
     let _ = overlays_submenu.append (&overlays_none as _);
 
-    // and the same for overrides
+    // the same for recent-fgnd hwnds
+    let fg_recents : LinkedHashMap <Hwnd, FgRecentsSubMenuEntry> = LinkedHashMap::new();
+    let fg_recents_submenu = make_sub_menu (MenuId::FgRecentsSubmenu, true);
+    let _ = fg_recents_submenu .append (&overlays_none as _);
+
+    // and similar for overrides
     let overrides : Vec <OverridesSubMenuEntry> = vec![];
     let overrides_submenu = make_sub_menu (MenuId::OverridesSubmenu, true);
     let overrides_none = make_menu_check  (MenuId::OverridesSubNone, true, false);
@@ -319,7 +343,8 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
 
     let tray_menu = Menu::new();
     let _ = tray_menu .append_items ( &[
-        &full_screen_mode, &auto_ov_enabled, &overlays_submenu, &overrides_submenu, &effects_submenu, &sep, &sep,
+        &full_screen_mode, &auto_ov_enabled, &sep, &sep,
+        &fg_recents_submenu, &overlays_submenu, &effects_submenu, &overrides_submenu, &sep, &sep,
         &presets_submenu, &sep, &sep,
         &mag_submenu, &sep, &sep,
         &conf_submenu, &sep,
@@ -332,11 +357,16 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
         .with_icon (get_dusky_icon())
         .build() .unwrap();
 
+    let (overlays_subs_dirty, fg_recents_subs_dirty, effects_subs_dirty, overrides_subs_dirty) = (
+        Flag::default(), Flag::default(), Flag::default(), Flag::default()
+    );
+
     TrayDat {
         wd, tray, full_screen_mode, auto_ov_enabled,
-        overlays, overrides, effects, presets, mag_levels,
-        overlays_submenu, overrides_submenu, effects_submenu, presets_submenu, mag_submenu,
-        overlays_none, overrides_none, effects_none, presets_none, mag_none,
+        overlays, fg_recents, effects, overrides, presets, mag_levels,
+        overlays_submenu, fg_recents_submenu, effects_submenu, overrides_submenu, presets_submenu, mag_submenu,
+        overlays_subs_dirty, fg_recents_subs_dirty, effects_subs_dirty, overrides_subs_dirty,
+        overlays_none, effects_none, overrides_none, presets_none, mag_none,
         auto_start, auto_start_elev, elev_launch_link,
     }
 }
@@ -362,14 +392,9 @@ fn auto_start__update_state (
     // ^^ non-elev menu is enabled only when it can be acted on (either its already enabled, or elev-task is not enabled)
 }
 
+
 fn eff_str (effect: Option <ColorEffect>) -> String {
     format! ("🗲(Effect: {:.50})", effect .map (|e| e.name()) .unwrap_or("None"))
-}
-fn update_ov_menu_text (entry: &OverlaysSubMenuEntry, last_fgnd_ov: Hwnd) {
-    let prefix = if entry.hwnd == last_fgnd_ov {"🗲"} else {""};
-    let disp = format! ("{prefix} {} : {}", &entry.exe, &entry.title);
-    let disp = if disp.len() > 60 { format!("{}..", &disp[..58]) } else { disp };
-    entry.menu_item.set_text (disp);
 }
 
 fn overlays_menu__exec_action (id:&str, tray: &TrayDat) {
@@ -384,7 +409,6 @@ fn overlays_menu__handle_overlay_created (hwnd: Hwnd, effect: ColorEffect, tray:
     let id = MenuPrefix::Overlay .id (hwnd.0);
     let menu_item = CheckMenuItem::with_id (&id, "", true, true, None);
     let sub_entry = OverlaysSubMenuEntry { id: id.clone(), hwnd, exe, title, effect, menu_item };
-    update_ov_menu_text (&sub_entry, tray.wd.fgnd_ov_cache.load());
 
     if let Some((idx, _)) = tray.overlays .iter() .find_position (|ov| ov.id == id) {
         tray.overlays .remove (idx);
@@ -393,53 +417,134 @@ fn overlays_menu__handle_overlay_created (hwnd: Hwnd, effect: ColorEffect, tray:
     tray.overlays .sort_by (|a,b| {
         a.exe.cmp(&b.exe) .then_with (|| a.title.cmp(&b.title))
     });
-    overlays_menu__rebuild_submenu (tray);
-    tray.overlays_none .set_checked (false);
-    update_tray__overlay_fgnd ();
+    tray.overlays_subs_dirty.set();
+
+    update_tray__fgnd_hwnd (Some(hwnd), true);
+    // ^^ will circle back and update text etc
 }
 
 fn overlays_menu__handle_overlay_cycled (hwnd: Hwnd, effect: ColorEffect, tray: &mut TrayDat) {
     if let Some(entry) = tray.overlays .iter_mut() .find (|ov| ov.hwnd == hwnd) {
         entry.effect = effect;
     }
-    effects_menu__refresh (tray);
+    tray.effects_subs_dirty.set();
+    tray.fg_recents_subs_dirty.set();
 }
 
 fn overlays_menu__handle_overlay_removed (hwnd: Hwnd, tray: &mut TrayDat) {
     if let Some((idx, _entry)) = tray.overlays .iter() .find_position (|ov| ov.hwnd == hwnd) {
         tray.overlays .remove (idx);
     }
-    overlays_menu__rebuild_submenu (tray);
-    if tray.overlays.is_empty() {
-        tray.overlays_none.set_checked (true);
-    }
-    effects_menu__refresh (tray);
+    tray.overlays_subs_dirty.set();
+    tray.effects_subs_dirty.set();
+    tray.fg_recents_subs_dirty.set();
 }
 
 fn overlays_menu__handle_overlays_cleared (tray : &mut TrayDat) {
-    tray.overlays .clear();
-    overlays_menu__rebuild_submenu (tray);
-    tray.overlays_none .set_checked (true);
-    effects_menu__refresh (tray);
-}
-
-fn overlays_menu__handle_fgnd (tray: &mut TrayDat) {
-    let fg_ov_hwnd = tray.wd.fgnd_ov_cache.load();
-    for ov in &tray.overlays {
-        update_ov_menu_text (ov, fg_ov_hwnd);
-    }
-    effects_menu__refresh (tray);
+    tray.overlays.clear();
+    tray.overlays_subs_dirty.set();
+    tray.effects_subs_dirty.set();
+    tray.fg_recents_subs_dirty.set();
 }
 
 fn overlays_menu__rebuild_submenu (tray: &mut TrayDat) {
+    tray.overlays_subs_dirty.clear();
     for item in tray.overlays_submenu.items() {
         if let Some(item) = item.as_check_menuitem() {
             let _ = tray.overlays_submenu .remove (item);
         }
     }
+    tray.overlays_none .set_checked (tray.overlays.is_empty());
     let _ = tray.overlays_submenu.append (&tray.overlays_none as _);
-    for item in tray.overlays .iter() .map (|e| &e.menu_item) {
-        let _ = tray.overlays_submenu .append (item);
+
+    let ov_hwnd = tray.wd.fgnd_ov_cache.load();
+    for ov in &tray.overlays {
+        let prefix = if ov.hwnd == ov_hwnd {"🗲"} else {""};
+        let disp = format! ("{prefix} {} : {}", &ov.exe, &ov.title);
+        let disp = if disp.len() > 60 { format!("{}..", &disp[..58]) } else { disp };
+        ov.menu_item.set_text (disp);
+        let _ = tray.overlays_submenu .append (&ov.menu_item as _);
+    }
+}
+
+
+
+
+
+fn fg_recents_menu__exec_action (id:&str, tray: &TrayDat) {
+    if let Some((_hwnd, fge)) = tray.fg_recents .iter() .find (|(_k,v)| v.id == id) {
+        if tray.wd.has_overlay(&fge.hwnd) {
+            tray.wd.post_req__overlay_remove (fge.hwnd);
+        } else {
+            // Use the cached effect if possible, else default
+            let effect = tray.wd.auto .check_rule_cached (fge.hwnd) .and_then (|r| r.effect)
+                .filter (|eff| !eff.is_identity()) .unwrap_or (tray.wd.effects.default);
+            tray.wd.post_req__overlay_create(fge.hwnd, effect);
+        }
+    }
+}
+
+fn fg_recents_menu__handle_fgnd (hwnd: Option<Hwnd>, has_overlay: bool, tray: &mut TrayDat) {
+    //tracing::debug! ("fgnd: {hwnd:?} .. ov:{has_overlay} .. cache-len:{:?}", tray.fg_recents.len());
+    let Some(hwnd) = hwnd else {
+        // hook events for window-closing etc to send these .. we'll rebuild subs to clear cruft
+        tray.fg_recents_subs_dirty.set();
+        return
+    };
+    if has_overlay {
+        tray.overlays_subs_dirty.set();
+        tray.effects_subs_dirty.set();
+    }
+    if let Some (_prior) = tray.fg_recents .get_refresh (&hwnd) {
+        tray.fg_recents_subs_dirty.set();
+        return
+    }
+    let exe = win_utils::get_exe_by_hwnd(hwnd) .unwrap_or_default();
+    let title = win_utils::get_win_title(hwnd);
+    let id = MenuPrefix::FgRecent .id (hwnd.0);
+    let menu_item = CheckMenuItem::with_id (&id, "", true, has_overlay, None);
+    let sub_entry = FgRecentsSubMenuEntry { id: id.clone(), hwnd, exe, title, menu_item };
+    tray.fg_recents .insert (hwnd, sub_entry);
+    tray.fg_recents_subs_dirty.set();
+    while tray.fg_recents.len() >= 64 {
+        tray.fg_recents .pop_front();
+    }
+}
+
+fn fg_recents_menu__rebuild_submenu (tray: &mut TrayDat) {
+    tray.fg_recents_subs_dirty.clear();
+    for item in tray.fg_recents_submenu.items() {
+        if let Some(item) = item.as_check_menuitem() {
+            let _ = tray.fg_recents_submenu.remove(item);
+        }
+    }
+    let _ = tray.fg_recents_submenu .append (&tray.overlays_none as _);
+    let fg_ov = tray.wd.fgnd_ov_cache.load();
+    let mut count : isize = 0;
+    let mut zombies : LinkedList <Hwnd> = LinkedList::new();
+
+    for (&hwnd, entry) in tray.fg_recents .iter_mut().rev() {
+        if count >= 16 {
+            break;
+        }
+        if !check_window_exists (hwnd) {
+            zombies.push_back (hwnd);
+            continue;
+        }
+        if !check_window_visible (hwnd) || check_window_cloaked (hwnd) {
+            continue;
+        }
+        count += 1;
+        let has_overlay = tray.wd.has_overlay(&entry.hwnd);
+        entry.menu_item.set_checked (has_overlay);
+        let prefix = if has_overlay && entry.hwnd == fg_ov { "🗲" } else { "" };
+        let disp = format!("{prefix} {} : {}", &entry.exe, &entry.title);
+        let disp = if disp.len() > 60 { format!("{}..", &disp[..58]) } else { disp };
+        entry.menu_item.set_text (disp);
+        let _ = tray.fg_recents_submenu .append (&entry.menu_item);
+    }
+    for hwnd in zombies {
+        tray.fg_recents .remove (&hwnd);
     }
 }
 
@@ -470,30 +575,29 @@ fn overrides_menu__handle_override_added (hwnd: Hwnd, tray: &mut TrayDat) {
     tray.overrides .sort_by (|a,b| {
         a.exe.cmp(&b.exe) .then_with (|| a.title.cmp(&b.title))
     });
-    overrides_menu__rebuild_submenu (tray);
-    tray.overrides_none .set_checked (false);
+    tray.overrides_subs_dirty.set();
 }
 
 fn overrides_menu__handle_override_removed (hwnd: Hwnd, tray: &mut TrayDat) {
     if let Some((idx, _)) = tray.overrides .iter() .find_position (|ov| ov.hwnd == hwnd) {
         tray.overrides .remove (idx);
     }
-    overrides_menu__rebuild_submenu (tray);
-    tray.overrides_none .set_checked (tray.overrides.is_empty());
+    tray.overrides_subs_dirty.set();
 }
 
 fn overrides_menu__handle_overrides_cleared (tray : &mut TrayDat) {
     tray.overrides .clear();
-    overrides_menu__rebuild_submenu (tray);
-    tray.overrides_none .set_checked (true);
+    tray.overrides_subs_dirty.set();
 }
 
 fn overrides_menu__rebuild_submenu (tray: &mut TrayDat) {
+    tray.overrides_subs_dirty.clear();
     for item in tray.overrides_submenu.items() {
         if let Some(item) = item.as_check_menuitem() {
             let _ = tray.overrides_submenu .remove (item);
         }
     }
+    tray.overrides_none .set_checked (tray.overrides.is_empty());
     let _ = tray.overrides_submenu.append (&tray.overrides_none as _);
     for item in tray.overrides .iter() .map (|e| &e.menu_item) {
         let _ = tray.overrides_submenu .append (item);
@@ -511,46 +615,38 @@ fn effects_menu__exec_action (id: &str, tray: &TrayDat) {
     }
 }
 
-fn effects_menu__clear_checkmarks (tray: &TrayDat) {
-    tray.effects_none .set_checked (true);
-    for effect in &tray.effects {
-        effect.menu_item .set_checked (false);
-    }
-}
-
-fn effects_menu__set_checkmark (effect:ColorEffect, tray: &TrayDat) {
-    if let Some(effect) = tray.effects .iter() .find (|p| p.effect == effect) {
-        tray.effects_none .set_checked (false);
-        effect.menu_item .set_checked (true);
-    }
-}
-
 fn effects_menu__refresh (tray: &TrayDat) {
     //tracing::debug! ("refreshing effects menu ..");
+
+    fn effects_menu__update_checkmarks (effect: Option<ColorEffect>, tray: &TrayDat) {
+        tray.effects_none .set_checked (effect.is_none());
+        for entry in &tray.effects {
+            entry.menu_item .set_checked (Some(entry.effect) == effect);
+        }
+    }
+
+    tray.effects_subs_dirty.clear();
+
     if tray.wd.check_fs_mode() {
         tray.effects_submenu .set_enabled (true);
         let effect = tray.wd.get_fs_eff();
         tray.effects_submenu .set_text (eff_str (effect));
-        effects_menu__clear_checkmarks (tray);
-        if let Some(effect) = effect {
-            effects_menu__set_checkmark (effect, tray);
-        }
+        effects_menu__update_checkmarks (effect, tray);
     }
     else if tray.overlays.is_empty() {
         tray.effects_submenu .set_enabled (false);
         tray.effects_submenu .set_text (eff_str (None));
-        effects_menu__clear_checkmarks (tray);
+        effects_menu__update_checkmarks (None, tray);
     } else {
         let target = tray.wd.fgnd_ov_cache.load();
         if let Some (entry) = tray.overlays .iter() .find (|ov| ov.hwnd == target) {
             tray.effects_submenu .set_enabled (true);
             tray.effects_submenu .set_text (eff_str (Some (entry.effect)));
-            effects_menu__clear_checkmarks (tray);
-            effects_menu__set_checkmark (entry.effect, tray);
+            effects_menu__update_checkmarks (Some(entry.effect), tray);
         } else {
             tray.effects_submenu .set_enabled (false);
             tray.effects_submenu .set_text (eff_str (None));
-            effects_menu__clear_checkmarks (tray);
+            effects_menu__update_checkmarks (None, tray);
         }
     }
 }
@@ -563,7 +659,7 @@ fn presets_menu__exec_action (id: &str, tray: &TrayDat) {
     if let Some(preset) = tray.presets .iter() .find (|p| p.id == id) {
         if preset.menu_item.is_checked() {
             // ^^ note that by the time we're processing this, the checked state has already been updated for this click!
-            presets_menu__clear_checkmarks (tray);
+            presets_menu__update_checkmarks (None, tray);
             tray.wd.post_req__apply_gamma_preset (preset.preset);
             // ^^ this will cycle back for tray update and will update the checked state
         } else {
@@ -573,17 +669,19 @@ fn presets_menu__exec_action (id: &str, tray: &TrayDat) {
     }
 }
 
-fn presets_menu__clear_checkmarks (tray: &TrayDat) {
-    tray.presets_none .set_checked (true);
-    for preset in &tray.presets {
-        preset.menu_item .set_checked (false);
-    }
+fn presets_menu__handle_preset_event (
+    preset: Option <GammaPreset>, applied: bool, succeeded: bool, tray: &TrayDat
+) {
+    let prefix = if succeeded {""} else {"❌ <- "};
+    let name = preset .map (|p| p.name()) .unwrap_or ("None");
+    tray.presets_submenu .set_text ( format! ("{prefix}Gamma Preset: {name:.50}") );
+    presets_menu__update_checkmarks (preset.filter (|_| applied), tray);
 }
 
-fn presets_menu__set_checkmark (preset:GammaPreset, tray: &TrayDat) {
-    if let Some(preset) = tray.presets .iter() .find (|p| p.preset == preset) {
-        tray.presets_none .set_checked (false);
-        preset.menu_item .set_checked (true);
+fn presets_menu__update_checkmarks (preset: Option<GammaPreset>, tray: &TrayDat) {
+    tray.presets_none .set_checked (preset.is_none());
+    for entry in &tray.presets {
+        entry.menu_item .set_checked (Some(entry.preset) == preset);
     }
 }
 
@@ -595,7 +693,7 @@ fn mag_menu__exec_action (id: &str, tray: &TrayDat) {
     if let Some(mag) = tray.mag_levels .iter() .find (|p| p.id == id) {
         if mag.menu_item.is_checked() {
             // ^^ note that by the time we're processing this, the checked state has already been updated for this click!
-            mag_menu__clear_checkmarks (tray);
+            mag_menu__update_checkmarks (None, tray);
             tray.wd.post_req__apply_mag_level (mag.level);
             tray.wd.post_req__mag_refresh();
             // ^^ this will cycle back for tray update and will update the checked state
@@ -605,18 +703,17 @@ fn mag_menu__exec_action (id: &str, tray: &TrayDat) {
     }
 }
 
-fn mag_menu__clear_checkmarks (tray: &TrayDat) {
-    //tray.mag_none .set_checked (true);
-    // ^^ tray menu mag levels are non-exhaustive, so cant do this
-    for mag in &tray.mag_levels {
-        mag.menu_item .set_checked (false);
-    }
+fn mag_menu__handle_mag_event (level: Option<MagEffect>, tray: &TrayDat) {
+    let level = level .unwrap_or (*MAG_EFFECT_IDENTITY);
+    tray.mag_submenu.set_text ( format! ("Magnification Level : {:?}  ({:.2}x)", level.0, level.get()) );
+    mag_menu__update_checkmarks (Some(level), tray);
 }
 
-fn mag_menu__set_checkmark (level:MagEffect, tray: &TrayDat) {
-    if let Some(mag) = tray.mag_levels .iter() .find (|p| p.level == level) {
-        tray.mag_none .set_checked (false);
-        mag.menu_item .set_checked (true);
+fn mag_menu__update_checkmarks (level: Option<MagEffect>, tray: &TrayDat) {
+    // Note that tray menu mag levels are non-exhaustive !!
+    tray.mag_none .set_checked (level.is_none_or (|l| l.is_identity()));
+    for mag in &tray.mag_levels {
+        mag.menu_item .set_checked (Some(mag.level) == level);
     }
 }
 
@@ -658,11 +755,12 @@ fn exec_menu_action (id: &str, tray: &TrayDat) {
 
         Err (_) => {
             use MenuPrefix::*;
-            if      Overlay  .pfx_matches (id) { overlays_menu__exec_action  (id, tray); }
-            else if Override .pfx_matches (id) { overrides_menu__exec_action (id, tray); }
-            else if Effect   .pfx_matches (id) { effects_menu__exec_action   (id, tray); }
-            else if Preset   .pfx_matches (id) { presets_menu__exec_action   (id, tray); }
-            else if Mag      .pfx_matches (id) { mag_menu__exec_action       (id, tray); }
+            if      Overlay  .pfx_matches (id) { overlays_menu__exec_action   (id, tray); }
+            else if FgRecent .pfx_matches (id) { fg_recents_menu__exec_action (id, tray); }
+            else if Override .pfx_matches (id) { overrides_menu__exec_action  (id, tray); }
+            else if Effect   .pfx_matches (id) { effects_menu__exec_action    (id, tray); }
+            else if Preset   .pfx_matches (id) { presets_menu__exec_action    (id, tray); }
+            else if Mag      .pfx_matches (id) { mag_menu__exec_action        (id, tray); }
             else {
                 error! ("Unrecognized menu-id : {id}")
             }
@@ -739,6 +837,7 @@ fn handle_events (event: DuskyEvent, tray: &mut TrayDat) {
             tray.full_screen_mode.set_text (if enabled {"Full Screen Effect Enabled"} else {"Enable Full Screen Effect"});
             tray.auto_ov_enabled.set_enabled (!enabled);
             tray.overlays_submenu.set_enabled (!enabled);
+            tray.fg_recents_submenu.set_enabled (!enabled);
             tray.overrides_submenu.set_enabled (!enabled);
             effects_menu__refresh (tray);
         }
@@ -746,7 +845,6 @@ fn handle_events (event: DuskyEvent, tray: &mut TrayDat) {
         DuskyEvent::OverlayCreated { hwnd, effect }  =>  { overlays_menu__handle_overlay_created (hwnd, effect, tray); }
         DuskyEvent::OverlayCycled  { hwnd, effect }  =>  { overlays_menu__handle_overlay_cycled  (hwnd, effect, tray); }
         DuskyEvent::OverlayRemoved { hwnd }          =>  { overlays_menu__handle_overlay_removed (hwnd, tray); }
-        DuskyEvent::OverlayFgnd                      =>  { overlays_menu__handle_fgnd (tray); }
         DuskyEvent::OverlaysCount  { n_active }      =>  {
             if n_active == 0 { overlays_menu__handle_overlays_cleared (tray); }
             tray.overlays_submenu.set_text (format!("Active Overlays: {n_active:?}"));
@@ -760,23 +858,26 @@ fn handle_events (event: DuskyEvent, tray: &mut TrayDat) {
         }
 
         DuskyEvent::GammaState { applied, succeeded, preset } => {
-            let prefix = if succeeded {""} else {"❌ <- "};
-            let name = preset .map (|p| p.name()) .unwrap_or ("None");
-            tray.presets_submenu .set_text ( format! ("{prefix}Gamma Preset: {name:.50}") );
-            presets_menu__clear_checkmarks (tray);
-            if let Some(preset) = preset {
-                if applied { presets_menu__set_checkmark (preset, tray); }
-            }
+            presets_menu__handle_preset_event (preset, applied, succeeded, tray);
+        }
+        DuskyEvent::MagLevel { level } => {
+            mag_menu__handle_mag_event (level, tray);
         }
 
-        DuskyEvent::MagLevel { level } => {
-            let level = level .unwrap_or (*MAG_EFFECT_IDENTITY);
-            tray.mag_submenu.set_text ( format! ("Magnification Level : {:?}  ({:.2}x)", level.0, level.get()) );
-            mag_menu__clear_checkmarks (tray);
-            if level.is_identity() {
-                tray.mag_none .set_checked (true);
-            } else {
-                mag_menu__set_checkmark (level, tray);
+        DuskyEvent::FgndHwnd { hwnd, has_overlay }  =>  {
+            fg_recents_menu__handle_fgnd (hwnd, has_overlay, tray);
+        }
+        DuskyEvent::RefreshMenus => {
+            // we do a round-about way of setting dirty flags, then checking that during some event and sending a refresh msg
+            // this avoids sitting in background updating menus unnecessarily, and only rebuilds when menu is active
+            // this can however cause some flickering, which we reduce by handling the req later here than immdtly w other events
+            while [
+                &tray.overlays_subs_dirty, &tray.overrides_subs_dirty, &tray.fg_recents_subs_dirty, &tray.effects_subs_dirty
+            ] .iter() .any (|d| d.is_set()) {
+                if tray.overlays_subs_dirty   .is_set() { overlays_menu__rebuild_submenu (tray) }
+                if tray.overrides_subs_dirty  .is_set() { overrides_menu__rebuild_submenu (tray) }
+                if tray.fg_recents_subs_dirty .is_set() { fg_recents_menu__rebuild_submenu (tray) }
+                if tray.effects_subs_dirty    .is_set() { effects_menu__refresh (tray) }
             }
         }
 
@@ -811,10 +912,17 @@ pub fn start_system_tray_monitor (wd: &'static WinDusky) {
 
         //tracing::debug! ("loop-event : {event:?}");
 
+        if tray.overlays_subs_dirty.is_set() || tray.overrides_subs_dirty.is_set()
+            || tray.fg_recents_subs_dirty.is_set() || tray.effects_subs_dirty.is_set()
+        {
+            DuskyEvent::RefreshMenus.send();
+            // ^^ queuing up a menu refresh rather than directly rebuilding the menus here reduces (but wont quite eliminate) flickering
+        }
+
         unsafe { match event {
 
-            Event::UserEvent (menu_ev) => {
-                handle_events (menu_ev, &mut tray);
+            Event::UserEvent (dusky_ev) => {
+                handle_events (dusky_ev, &mut tray);
             }
 
             // we'll also handle mouse wheel events for cycling, and mouse btn events for toggling
@@ -883,8 +991,8 @@ pub fn update_tray__override_removed (hwnd: Hwnd) {
 pub fn update_tray__overrides_count (n_overrides: usize) {
     DuskyEvent::OverridesCount { n_overrides } .send();
 }
-pub fn update_tray__overlay_fgnd () {
-    DuskyEvent::OverlayFgnd .send();
+pub fn update_tray__fgnd_hwnd (hwnd: Option<Hwnd>, has_overlay: bool) {
+    DuskyEvent::FgndHwnd { hwnd, has_overlay } .send();
 }
 
 pub fn update_tray__autostart_state () {

@@ -97,6 +97,9 @@ impl Overlay {
             return Err (format! ("CreateOverlay failed for {target:?} .. Hwnd not a window!!"))
         }
 
+        // we'll attempt to bring the target fgnd before we create an overlay on it
+        let _ = SetForegroundWindow (target.into());
+
         // Create the host for the magnifier control
         let Ok(host) = CreateWindowExW (
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,

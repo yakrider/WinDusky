@@ -269,7 +269,7 @@ impl WinDusky {
         self.gamma_active.set();
         self.update_gamma_state();
     }
-    fn handle_req__cycle_gamma_preset (&self, forward: bool) { tracing::debug! ("why not");
+    fn handle_req__cycle_gamma_preset (&self, forward: bool) {
         if self.gamma_active.is_clear() { return }
         self.gamma_preset.cycle (forward);
         self.update_gamma_state();
@@ -352,7 +352,7 @@ impl WinDusky {
     fn create_overlay (&self, target:Hwnd, effect:ColorEffect) {
         // Warning : This should only be called from overlay-manager thread
         if !target.is_valid() {
-            warn! ("~~ WARNING ~~ Overlay creation request for {:?} .. Ingoring", &target);
+            warn! ("~~ WARNING ~~ Overlay creation request for {:?} .. Ignoring", &target);
             return
         }
         let mut overlays = self.overlays.write().unwrap();

@@ -3,7 +3,6 @@ name = "win_dusky"
 version = "0.1.8"
 authors = ["yakrider <yakrider@gmail.com>"]
 description = "Impose dark-mode on any window via color transformations"
-homepage = "https://github.com/yakrider/WinDusky"
 repository = "https://github.com/yakrider/WinDusky"
 keywords = ["darkmode", "nightmode", "invert", "ColorMatrix"]
 categories = []

@@ -81,6 +81,7 @@ pub struct WinDusky {
 
     gamma_active : Flag,
     gamma_preset : GammaPresetAtomic,
+    gamma_guard_enabled : Flag,
 
     overlays : RwLock <HashMap <Hwnd, Overlay>>,
     hosts    : RwLock <HashSet <Hwnd>>,
@@ -142,13 +143,15 @@ impl WinDusky {
 
         let auto = auto::AutoOverlay::init (conf, effects);
 
+        let gamma_active = Flag::new (conf.check_flag__gamma_at_startup());
+        let gamma_preset = GammaPresetAtomic::new (presets.default);
+        let gamma_guard_enabled = Flag::new (conf.check_flag__gamma_guard_enabled());
+
         let dusky =  WinDusky {
             conf, auto, effects, presets, fs_overlay, mag_overlay,
+            gamma_active, gamma_preset, gamma_guard_enabled,
 
             thread_id : GetCurrentThreadId(),
-
-            gamma_active : Flag::default(),
-            gamma_preset : GammaPresetAtomic::default(),
 
             overlays : RwLock::new (HashMap::default()),
             hosts    : RwLock::new (HashSet::default()),
@@ -175,11 +178,21 @@ impl WinDusky {
         self.setup_pointer_move_hook();
 
         // we'll setup gamma, but only if specified active at startup (to avoid resetting otherwise)
-        self.gamma_active.store (self.conf.check_flag__gamma_at_startup());
-        self.gamma_preset.store (self.presets.default);
         if self.gamma_active.is_set() { self.update_gamma_state(); }
 
         tray::update_tray__autostart_state();
+        tray::update_tray__auto_overlay_enable (self.auto.auto_overlay_enabled.is_set());
+        tray::update_tray__gamma_guard_enable (self.gamma_guard_enabled.is_set());
+
+        // to guard gamma, if enabled, we'll just start a 1 sec poll to check and reapply gamma
+        // (in theory for our initial use case, trying to listen to device driver change notif worked to catch screen off/on but felt fragile)
+        thread::spawn ( || {
+            let wd = WinDusky::instance();
+            loop {
+                thread::sleep (Duration::from_millis(1000));
+                wd.handle_req__gamma_guard_recheck();
+            }
+        });
 
         // finally we just babysit the message loop
         let mut msg: MSG = std::mem::zeroed();
@@ -222,10 +235,11 @@ impl WinDusky {
                 }
 
                 None => match msg.message {
-                    WM_TIMER   => { self.refresh_overlays(); }
-                    WM_HOTKEY  => { self.handle_hotkeys(msg.wParam.0); }
-                    WM_DESTROY => { self.handle_shutdown_req(); }
-                    _          => { DispatchMessageW (&msg); }
+                    WM_TIMER        => { self.refresh_overlays(); }
+                    WM_HOTKEY       => { self.handle_hotkeys (msg.wParam.0); }
+                    WM_DESTROY      => { self.handle_shutdown_req(); }
+                    //WM_DEVICECHANGE => { self.poke_gamma_guard (msg.wParam.0); }
+                    _               => { DispatchMessageW (&msg); }
                 }
 
             };
@@ -269,11 +283,39 @@ impl WinDusky {
         self.gamma_active.set();
         self.update_gamma_state();
     }
+    fn handle_req__reapply_gamma_preset (&self) {
+        self.gamma_active.set();
+        self.update_gamma_state();
+    }
     fn handle_req__cycle_gamma_preset (&self, forward: bool) {
         if self.gamma_active.is_clear() { return }
         self.gamma_preset.cycle (forward);
         self.update_gamma_state();
     }
+
+
+    pub(crate) fn toggle_gamma_guard_enabled (&self) -> bool {
+        let enabled = !self.gamma_guard_enabled.toggle();
+        tray::update_tray__gamma_guard_enable (enabled);
+        enabled
+    }
+    fn handle_req__gamma_guard_recheck (&self) {
+        if self.gamma_guard_enabled.is_set() && self.gamma_active.is_set() {
+            if !self.check_active_gamma_preset_match().unwrap_or_default() {
+                warn! ("Gamma Guard check .. active ramp does not match preset .. Re-applying preset !!");
+                self.update_gamma_state();
+            }
+        }
+    }
+    /*
+    fn poke_gamma_guard (&self, wparam: usize) {
+        // screen powering on/off should give a DBT_DEVNODES_CHANGED (0x0007), other device changes can be ignored
+        if wparam != 0x07 {
+            info!("gamma guard got poked !!");
+            self.handle_req__gamma_guard_recheck();
+        }
+    }*/
+
 
 
 

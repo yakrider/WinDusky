@@ -25,6 +25,7 @@ enum HotKeyId {
     EffectPrev,
 
     GammaPresetToggle,
+    GammaPresetReapply,
     GammaPresetNext,
     GammaPresetPrev,
 
@@ -64,9 +65,10 @@ impl WinDusky {
         register_hotkey ( EffectNext,         self.conf.get_hotkey__next_effect()         );
         register_hotkey ( EffectPrev,         self.conf.get_hotkey__prev_effect()         );
 
-        register_hotkey ( GammaPresetToggle,  self.conf.get_hotkey__gamma_preset_toggle() );
-        register_hotkey ( GammaPresetNext,    self.conf.get_hotkey__next_gamma_preset()   );
-        register_hotkey ( GammaPresetPrev,    self.conf.get_hotkey__prev_gamma_preset()   );
+        register_hotkey ( GammaPresetToggle,  self.conf.get_hotkey__gamma_preset_toggle()  );
+        register_hotkey ( GammaPresetReapply, self.conf.get_hotkey__gamma_preset_reapply() );
+        register_hotkey ( GammaPresetNext,    self.conf.get_hotkey__next_gamma_preset()    );
+        register_hotkey ( GammaPresetPrev,    self.conf.get_hotkey__prev_gamma_preset()    );
 
         register_hotkey ( MagLevelToggle,     self.conf.get_hotkey__screen_mag_toggle()   );
         register_hotkey ( MagLevelNext,       self.conf.get_hotkey__next_mag_level()      );
@@ -107,9 +109,10 @@ impl WinDusky {
             EffectNext    => { self.handle_req__cycle_color_effect (true ); }
             EffectPrev    => { self.handle_req__cycle_color_effect (false); }
 
-            GammaPresetToggle  => { self.handle_req__toggle_gamma_active(); }
-            GammaPresetNext    => { self.handle_req__cycle_gamma_preset (true ); }
-            GammaPresetPrev    => { self.handle_req__cycle_gamma_preset (false); }
+            GammaPresetToggle   => { self.handle_req__toggle_gamma_active(); }
+            GammaPresetReapply  => { self.handle_req__reapply_gamma_preset(); }
+            GammaPresetNext     => { self.handle_req__cycle_gamma_preset (true ); }
+            GammaPresetPrev     => { self.handle_req__cycle_gamma_preset (false); }
 
             MagLevelToggle  => { self.handle_req__toggle_mag_overlay(); }
             MagLevelNext    => { self.handle_req__cycle_mag_level (true ); }

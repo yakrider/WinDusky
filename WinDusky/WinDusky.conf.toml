@@ -89,8 +89,13 @@ hotkey__prev_magnification_level = { key = "Comma",  modifiers = ["Win", "Ctrl"]
 
 
 # Hotkey to toggle gamma preset between applying current preset or resetting gamma-ramp to default
-# The default is "Win+Shift+I"
+# The default is "Win+Shift+I" .. specified as { key = "I", modifiers = ["Win", "Shift"] }
 hotkey__gamma_preset_toggle = { key = "I", modifiers = ["Win", "Shift"] }
+
+# Hotkey to re-apply aka restore current gamma preset (in case it has been externally modified)
+# The default is "Win+Shift+Ctrl+I" .. specified as { key = "I", modifiers = ["Win", "Shift", "Ctrl] }
+hotkey__gamma_preset_reapply = { key = "I", modifiers = ["Win", "Shift", "Ctrl"] }
+
 
 
 # Hotkey to cycle through (next and previous) gamma-presets in the gamma-presets list
@@ -133,6 +138,9 @@ gamma_preset_default = "Dark"
 
 # Setting apply_gamma_preset_at_startup to true will apply the gamma_preset_default above when WinDusky starts-up
 apply_gamma_preset_at_startup = true
+
+# Setting gamma_guard_enabled to true will monitor any system gamma changes and will reapply any active gamma preset to restore it
+gamma_guard_enabled = true
 
 
 # Definition of gamma-preset entries (including the gamma, brightness, contrast, and color-temp values)
@@ -189,7 +197,7 @@ auto_overlay_luminance__delay_ms = 0
 # Comma separated list of exes to exclude from luminance based auto-overlay application
 # For instance, windows of browsers can be expected to change based on content, so one time hwnd luminance based rules might not be appropriate
 auto_overlay_luminance__exclusion_exes = [
-	"chrome.exe", "firefox.exe", "msedge.exe", "msedgewebview2.exe",
+	"chrome.exe", "firefox.exe", "msedge.exe", "msedgewebview2.exe", "i_view64.exe",
 ]
 
 

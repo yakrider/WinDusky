@@ -71,6 +71,8 @@ pub enum DuskyEvent {
     OverridesCount  { n_overrides : usize },
 
     GammaState { applied: bool, succeeded: bool, preset: Option <GammaPreset> },
+    GammaGuardEnable (bool),
+
     MagLevel { level: Option <MagEffect> },
 
     FgndHwnd { hwnd: Option<Hwnd>, has_overlay: bool },
@@ -108,6 +110,8 @@ enum MenuId {
     PresetsSubNone,
     MagSubNone,
 
+    GammaGuardEnabled,
+
     Configs,
     Version,
     AutoStart,
@@ -142,6 +146,8 @@ impl MenuId {
             EffectsSubNone    => "(Effect: None)",
             PresetsSubNone    => "(Preset: None)",
             MagSubNone        => "(Level: None)",
+
+            GammaGuardEnabled => "Gamma Guard Enabled",
 
             Configs        => "Configs",
             Version        => &VERSION,
@@ -220,6 +226,8 @@ struct TrayDat {
     presets_submenu    : Submenu,
     mag_submenu        : Submenu,
 
+    gamma_guard_enabled : CheckMenuItem,
+
     // we'll keep a bunch of flags to indicate submenus need rebuilding (instead of immediately rebuilding them)
     // (note that we dont need these for gamma/mag as there are no auto/hook events of relevance there)
     overlays_subs_dirty   : Flag,
@@ -242,6 +250,9 @@ struct TrayDat {
 
 
 fn build_tray (wd: &'static WinDusky) -> TrayDat {
+
+    // Note that the thought for many of these checkmarks etc is that at init we just put some defaults first ..
+    // then at dusky start, the tray values should be updated as appropriate based on configs, startup state etc
 
     fn make_menu_item (m:MenuId, enabled:bool) -> MenuItem {
         MenuItem::with_id (m.as_ref(), m.text(), enabled, None)
@@ -340,12 +351,14 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
     let _ = mag_submenu.append_items (mag_levels .iter() .map (|p| &p.menu_item as _) .collect::<Vec<_>>() .as_slice());
 
 
+    let gamma_guard_enabled  = make_menu_check (MenuId::GammaGuardEnabled, true, true);
+
 
     let tray_menu = Menu::new();
     let _ = tray_menu .append_items ( &[
         &full_screen_mode, &auto_ov_enabled, &sep, &sep,
         &fg_recents_submenu, &overlays_submenu, &effects_submenu, &overrides_submenu, &sep, &sep,
-        &presets_submenu, &sep, &sep,
+        &presets_submenu, &gamma_guard_enabled, &sep, &sep,
         &mag_submenu, &sep, &sep,
         &conf_submenu, &sep,
         &restart, &exit
@@ -367,7 +380,7 @@ fn build_tray (wd: &'static WinDusky) -> TrayDat {
         overlays_submenu, fg_recents_submenu, effects_submenu, overrides_submenu, presets_submenu, mag_submenu,
         overlays_subs_dirty, fg_recents_subs_dirty, effects_subs_dirty, overrides_subs_dirty,
         overlays_none, effects_none, overrides_none, presets_none, mag_none,
-        auto_start, auto_start_elev, elev_launch_link,
+        gamma_guard_enabled, auto_start, auto_start_elev, elev_launch_link,
     }
 }
 
@@ -659,7 +672,6 @@ fn presets_menu__exec_action (id: &str, tray: &TrayDat) {
     if let Some(preset) = tray.presets .iter() .find (|p| p.id == id) {
         if preset.menu_item.is_checked() {
             // ^^ note that by the time we're processing this, the checked state has already been updated for this click!
-            presets_menu__update_checkmarks (None, tray);
             tray.wd.post_req__apply_gamma_preset (preset.preset);
             // ^^ this will cycle back for tray update and will update the checked state
         } else {
@@ -674,6 +686,7 @@ fn presets_menu__handle_preset_event (
 ) {
     let prefix = if succeeded {""} else {"❌ <- "};
     let name = preset .map (|p| p.name()) .unwrap_or ("None");
+    let _ = tray.tray.set_tooltip (Some (format! ("WinDusky \nGamma Preset : {name}")));
     tray.presets_submenu .set_text ( format! ("{prefix}Gamma Preset: {name:.50}") );
     presets_menu__update_checkmarks (preset.filter (|_| applied), tray);
 }
@@ -738,6 +751,8 @@ fn exec_menu_action (id: &str, tray: &TrayDat) {
             EffectsSubNone    => { tray.wd.post_req__toggle_color_eff (tray.wd.fgnd_ov_cache.load()); }
             PresetsSubNone    => { tray.wd.post_req__toggle_gamma_preset(); }
             MagSubNone        => { tray.wd.post_req__toggle_mag_level(); }
+
+            GammaGuardEnabled => { tray.wd.toggle_gamma_guard_enabled(); }
 
             AutoStart      => { autostart::proc_req__toggle_dusky_autostart (false) }
             AutoStartElev  => { autostart::proc_req__toggle_dusky_autostart (true) }
@@ -860,6 +875,11 @@ fn handle_events (event: DuskyEvent, tray: &mut TrayDat) {
         DuskyEvent::GammaState { applied, succeeded, preset } => {
             presets_menu__handle_preset_event (preset, applied, succeeded, tray);
         }
+        DuskyEvent::GammaGuardEnable (enabled) => {
+            tray.gamma_guard_enabled.set_checked(enabled);
+            tray.gamma_guard_enabled.set_text (if enabled {"Gamma Guard Enabled"} else {"Enable Gamma Guard"})
+        }
+
         DuskyEvent::MagLevel { level } => {
             mag_menu__handle_mag_event (level, tray);
         }
@@ -964,6 +984,9 @@ pub fn update_tray__auto_overlay_enable (enabled: bool) {
 }
 pub fn update_tray__gamma_state (applied:bool, succeeded:bool, preset: Option <GammaPreset>) {
     DuskyEvent::GammaState { applied, succeeded, preset } .send();
+}
+pub fn update_tray__gamma_guard_enable (enabled:bool) {
+    DuskyEvent::GammaGuardEnable (enabled) .send();
 }
 pub fn update_tray__mag_level (level: Option <MagEffect>) {
     DuskyEvent::MagLevel {level} .send();

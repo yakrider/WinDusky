@@ -96,7 +96,7 @@ impl ColorEffectAtomic {
         let cyc_len = ColorEffects::instance().cycle_order.len();
         let incr = if forward { cyc_len + 1 } else { cyc_len -1 };
         let update_fn = |cur| Some ((cur + incr) % cyc_len);
-        let prior_idx = self.0.fetch_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
+        let prior_idx = self.0.try_update (Ordering::AcqRel, Ordering::Acquire, update_fn);
         let new_idx = update_fn (prior_idx.unwrap_or_else(|e| e)) .unwrap();
         ColorEffect (new_idx)
     }

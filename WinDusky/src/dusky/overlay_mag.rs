@@ -76,7 +76,7 @@ impl MagEffectAtomic {
         // for magnification, we'll use non-wrapping cycling (i.e. clamp at [min,max] extremes)
         let incr = if forward { 1 } else { -1};
         let update_fn = |cur| Some ((cur as isize + incr) .clamp (0, MAX_MAG_LEVELS as isize) as u8);
-        let prior_level = self.0.fetch_update ( Ordering::AcqRel, Ordering::Acquire, update_fn );
+        let prior_level = self.0.try_update ( Ordering::AcqRel, Ordering::Acquire, update_fn );
         let new_level = update_fn (prior_level.unwrap_or_else (|e| e)) .unwrap();
         MagEffect (new_level)
     }

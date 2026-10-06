@@ -372,9 +372,10 @@ impl Config {
     pub fn get_hotkey__clear_overlays  (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overlays") }
     pub fn get_hotkey__clear_overrides (&self)  -> Option<HotKey> { self.get_hotkey ("hotkey__clear_overrides") }
 
-    pub fn get_hotkey__gamma_preset_toggle (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__gamma_preset_toggle") }
-    pub fn get_hotkey__next_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__next_gamma_preset") }
-    pub fn get_hotkey__prev_gamma_preset (&self)   -> Option<HotKey> { self.get_hotkey ("hotkey__prev_gamma_preset") }
+    pub fn get_hotkey__gamma_preset_toggle  (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__gamma_preset_toggle") }
+    pub fn get_hotkey__gamma_preset_reapply (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__gamma_preset_reapply") }
+    pub fn get_hotkey__next_gamma_preset (&self)    -> Option<HotKey> { self.get_hotkey ("hotkey__next_gamma_preset") }
+    pub fn get_hotkey__prev_gamma_preset (&self)    -> Option<HotKey> { self.get_hotkey ("hotkey__prev_gamma_preset") }
 
     pub fn get_hotkey__screen_mag_toggle (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__screen_magnification_toggle") }
     pub fn get_hotkey__next_mag_level (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__next_magnification_level") }
@@ -509,6 +510,9 @@ impl Config {
 
     pub fn check_flag__gamma_at_startup (&self) -> bool {
         self.check_flag ("apply_gamma_preset_at_startup")
+    }
+    pub fn check_flag__gamma_guard_enabled (&self) -> bool {
+        self.check_flag ("gamma_guard_enabled")
     }
 
     fn parse_gamma_preset (v: &Value) -> Option <GammaPresetSpec> {

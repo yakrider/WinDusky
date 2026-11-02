@@ -140,7 +140,8 @@ gamma_preset_default = "Dark"
 apply_gamma_preset_at_startup = true
 
 # Setting gamma_guard_enabled to true will monitor any system gamma changes and will reapply any active gamma preset to restore it
-gamma_guard_enabled = true
+# Note: this is specifically to guard against gamma changes on a timer .. gamma checks will happen regardless upon system events like display on/off
+gamma_guard_enabled = false
 
 
 # Definition of gamma-preset entries (including the gamma, brightness, contrast, and color-temp values)

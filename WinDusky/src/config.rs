@@ -6,8 +6,8 @@ use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 use std::{fs, io};
 
-use tracing::metadata::LevelFilter;
 use tracing::{info, warn, Level};
+use tracing::metadata::LevelFilter;
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -17,9 +17,9 @@ use tracing_subscriber::reload::Handle;
 use tracing_subscriber::{reload, Layer, Registry};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
+use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
 use toml_edit::{DocumentMut, Item, Table, Value};
-use windows::Win32::UI::Magnification::MAGCOLOREFFECT;
 
 use crate::*;
 use crate::keys::VKey;
@@ -223,8 +223,9 @@ impl Config {
 
             let log_appender = RollingFileAppender::builder()
                 .rotation(Rotation::DAILY)
-                .filename_prefix("WinDusky_log")
+                .filename_prefix("WinDusky_log_")
                 .filename_suffix("log")
+                .latest_symlink ("WinDusky_log_latest_.log")
                 .max_log_files(7)
                 .build(log_loc)
                 .map_err (|_e| ())?;
@@ -378,8 +379,8 @@ impl Config {
     pub fn get_hotkey__prev_gamma_preset (&self)    -> Option<HotKey> { self.get_hotkey ("hotkey__prev_gamma_preset") }
 
     pub fn get_hotkey__screen_mag_toggle (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__screen_magnification_toggle") }
-    pub fn get_hotkey__next_mag_level (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__next_magnification_level") }
-    pub fn get_hotkey__prev_mag_level (&self) -> Option<HotKey> { self.get_hotkey ("hotkey__prev_magnification_level") }
+    pub fn get_hotkey__next_mag_level (&self)    -> Option<HotKey> { self.get_hotkey ("hotkey__next_magnification_level") }
+    pub fn get_hotkey__prev_mag_level (&self)    -> Option<HotKey> { self.get_hotkey ("hotkey__prev_magnification_level") }
 
 
 

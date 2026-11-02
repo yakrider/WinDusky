@@ -1,7 +1,6 @@
 use std::ptr::null;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{LazyLock, OnceLock};
-use tracing::{error, info};
 
 use windows::Win32::Foundation::{GetLastError, POINT};
 use windows::Win32::UI::Magnification::{MagSetFullscreenTransform, MagSetInputTransform};
@@ -118,7 +117,7 @@ impl MagOverlay {
         let y_offset = (y - src_h/2) .clamp (0, screen_h - src_h);
 
         if !MagSetFullscreenTransform (mag, x_offset, y_offset) .as_bool() {
-            error! ("Error setting Screen Magnification transform: {:?}", GetLastError());
+            tracing::error! ("Error setting Screen Magnification transform: {:?}", GetLastError());
         }
         // // we'll also setup input transform for pen/touch inputs (mouse works even w/o this)
         // let mag_src = RECT { left: x_offset, top: y_offset, right: x_offset + src_w, bottom: y_offset + src_h };
@@ -149,7 +148,7 @@ impl MagOverlay {
     pub(super) fn unapply_effect (&self) -> Option<MagEffect> {
         let prior = (&self.level).into();
         self.active.clear();
-        info! ("Clearing Magnification Overlay!");
+        tracing::debug! ("Clearing Magnification Overlay!");
         //let _ = unsafe { MagSetFullscreenTransform (MAG_EFFECT_IDENTITY.get(), 0, 0) };
         // ^^ since we might be getting called from non-mag-init-thread, the caller should instead post req for mag refresh
         Some (prior)
@@ -158,7 +157,7 @@ impl MagOverlay {
     pub(super) fn apply_mag_level_cycled (&self, forward: Option<bool>) -> MagEffect {
         let level = if let Some(forward) = forward { self.level.cycle (forward) } else { (&self.level).into() };
         self.active .store (level != *MAG_EFFECT_IDENTITY);
-        info! ("Setting Screen Magnification to Level:{level:?}, i.e {:.2}x", level.get());
+        tracing::debug! ("Setting Screen Magnification to Level:{level:?}, i.e {:.2}x", level.get());
         //self.refresh_mag_overlay();
         // ^^ since we might be getting called from non-mag-init-thread, the caller should instead post req for mag refresh
         level

@@ -29,9 +29,7 @@ pub use overlay_mag::{MagEffect, MagOverlay, MAG_EFFECT_DEFAULT, MAG_EFFECT_IDEN
 use crate::{*, types::*};
 use crate::effects::{ColorEffect};
 use crate::presets::{GammaPresets, GammaPreset, GammaPresetAtomic};
-
-
-
+use crate::sys_events::SysEventsListener;
 
 const TIMER_TICK_MS : u32 = 16;
 
@@ -45,6 +43,7 @@ enum DuskyReq {
     ToggleGammaPreset,
     ApplyGammaPreset,
     CycleGammaPreset,
+    RecheckGammaGuard,
 
     ToggleMagLevel,
     ApplyMagLevel,
@@ -184,15 +183,19 @@ impl WinDusky {
         tray::update_tray__auto_overlay_enable (self.auto.auto_overlay_enabled.is_set());
         tray::update_tray__gamma_guard_enable (self.gamma_guard_enabled.is_set());
 
-        // to guard gamma, if enabled, we'll just start a 1 sec poll to check and reapply gamma
+        // to guard gamma, if enabled, we'll just start a 1 sec poll to request a gamma guard check
         // (in theory for our initial use case, trying to listen to device driver change notif worked to catch screen off/on but felt fragile)
         thread::spawn ( || {
             let wd = WinDusky::instance();
             loop {
-                thread::sleep (Duration::from_millis(1000));
-                wd.handle_req__gamma_guard_recheck();
+                thread::sleep (Duration::from_millis(3000));
+                if wd.conf.check_flag__gamma_guard_enabled() {
+                    wd.post_req__gamma_guard_recheck();
+                }
             }
         });
+
+        SysEventsListener::instance().setup_system_events_listener();
 
         // finally we just babysit the message loop
         let mut msg: MSG = std::mem::zeroed();
@@ -215,6 +218,7 @@ impl WinDusky {
                     ToggleGammaPreset => { self.handle_req__toggle_gamma_active(); }
                     ApplyGammaPreset  => { self.handle_req__apply_gamma_preset (GammaPreset (msg.lParam.0 as _)); }
                     CycleGammaPreset  => { self.handle_req__cycle_gamma_preset (msg.wParam.0 != 0); }
+                    RecheckGammaGuard => { self.handle_req__gamma_guard_recheck(); }
 
                     ToggleMagLevel => { self.handle_req__toggle_mag_overlay(); }
                     CycleMagLevel  => { self.handle_req__cycle_mag_level (msg.wParam.0 != 0); }
@@ -238,7 +242,6 @@ impl WinDusky {
                     WM_TIMER        => { self.refresh_overlays(); }
                     WM_HOTKEY       => { self.handle_hotkeys (msg.wParam.0); }
                     WM_DESTROY      => { self.handle_shutdown_req(); }
-                    //WM_DEVICECHANGE => { self.poke_gamma_guard (msg.wParam.0); }
                     _               => { DispatchMessageW (&msg); }
                 }
 
@@ -300,21 +303,15 @@ impl WinDusky {
         enabled
     }
     fn handle_req__gamma_guard_recheck (&self) {
-        if self.gamma_guard_enabled.is_set() && self.gamma_active.is_set() {
+        //if self.gamma_guard_enabled.is_set() && self.gamma_active.is_set() {
+        // ^^ hmm .. we'd rather only check for guard at timer loop, and for sys-events triggers, we'll check anyway!
+        if self.gamma_active.is_set() {
             if !self.check_active_gamma_preset_match().unwrap_or_default() {
                 warn! ("Gamma Guard check .. active ramp does not match preset .. Re-applying preset !!");
                 self.update_gamma_state();
             }
         }
     }
-    /*
-    fn poke_gamma_guard (&self, wparam: usize) {
-        // screen powering on/off should give a DBT_DEVNODES_CHANGED (0x0007), other device changes can be ignored
-        if wparam != 0x07 {
-            info!("gamma guard got poked !!");
-            self.handle_req__gamma_guard_recheck();
-        }
-    }*/
 
 
 
@@ -591,6 +588,8 @@ impl WinDusky {
 
     pub fn post_req__apply_gamma_preset  (&self, gp:GammaPreset) { self.post_req (DuskyReq::ApplyGammaPreset, None, Some(gp.0)) }
     pub fn post_req__apply_mag_level     (&self, mag:MagEffect) { self.post_req (DuskyReq::ApplyMagLevel, None, Some(mag.0 as _)) }
+
+    pub fn post_req__gamma_guard_recheck (&self) { self.post_req (DuskyReq::RecheckGammaGuard, None, None) }
 
     pub fn post_req__overlay_create      (&self, targ:Hwnd, eff:ColorEffect) { self.post_req (DuskyReq::OverlayCreate, Some(targ), Some(eff.0)) }
     pub fn post_req__overlay_remove      (&self, targ:Hwnd) { self.post_req (DuskyReq::OverlayRemove, Some(targ), None) }

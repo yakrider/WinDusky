@@ -23,6 +23,7 @@ mod occlusion;
 mod tray;
 mod win_utils;
 mod autostart;
+mod sys_events;
 
 fn main() {
 
